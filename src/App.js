@@ -271,21 +271,51 @@ function EncargadoDash({ user, onLogout }) {
   const flt = filter === "all" ? my : my.filter(([, o]) => o.status === filter);
   const cnt = { assigned: my.filter(([, o]) => o.status === "assigned").length, preparing: my.filter(([, o]) => o.status === "preparing").length, ready: my.filter(([, o]) => o.status === "ready").length };
 
-  const setStatus = async (oid, s) => {
-    setOrders(prev => ({ ...prev, [oid]: { ...prev[oid], status: s } }));
-    await fbUpdate(`orders/${oid}`, { status: s, [`statusUpdates/${s}`]: Date.now() });
+  const setStatus = async (oid, s, extra = {}) => {
+    setOrders(prev => ({ ...prev, [oid]: { ...prev[oid], status: s, ...extra } }));
+    await fbUpdate(`orders/${oid}`, { status: s, [`statusUpdates/${s}`]: Date.now(), ...extra });
     load();
   };
+
+  const [prepTime, setPrepTime] = useState(null);
 
   if (view === "detail" && sel) {
     const [oid, o] = sel; const st = getStatus(o.status);
     return (
       <div style={S.container}>
-        <div style={S.topBar}><button style={S.backBtn} onClick={() => { setView("list"); setSel(null); }}>← Volver</button><h2 style={S.topTitle}>{o.orderId}</h2></div>
+        <div style={S.topBar}><button style={S.backBtn} onClick={() => { setView("list"); setSel(null); setPrepTime(null); }}>← Volver</button><h2 style={S.topTitle}>{o.orderId}</h2></div>
         <div style={S.card}>
-          <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}><span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span></div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}><span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span>
+            {o.prepMinutes && <span style={{ ...S.badge, background: "#334155" }}>⏱️ {o.prepMinutes} min</span>}
+          </div>
           <OrderDetails order={o} />
-          {o.status === "assigned" && <button style={S.btnAction} onClick={() => { setStatus(oid, "preparing"); setSel([oid, { ...o, status: "preparing" }]); }}>👨‍🍳 Empezar a preparar</button>}
+
+          {/* Assigned: select prep time then accept */}
+          {o.status === "assigned" && (
+            <div style={{ marginTop: 12 }}>
+              <h3 style={S.secTitle}>⏱️ Tiempo de preparación</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
+                {[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map(m => (
+                  <button key={m} onClick={() => setPrepTime(m)} style={{
+                    padding: "12px 0", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer",
+                    background: prepTime === m ? "#f97316" : "#1a1a1a",
+                    color: prepTime === m ? "#fff" : "#888",
+                    border: prepTime === m ? "2px solid #f97316" : "1px solid #333",
+                  }}>{m}m</button>
+                ))}
+              </div>
+              <button
+                style={{ ...S.btnAction, opacity: prepTime ? 1 : 0.4, pointerEvents: prepTime ? "auto" : "none" }}
+                onClick={() => {
+                  const extra = { prepMinutes: prepTime, prepStartedAt: Date.now() };
+                  setStatus(oid, "preparing", extra);
+                  setSel([oid, { ...o, status: "preparing", ...extra }]);
+                  setPrepTime(null);
+                }}
+              >👨‍🍳 Aceptar pedido ({prepTime ? `${prepTime} min` : "seleccioná tiempo"})</button>
+            </div>
+          )}
+
           {o.status === "preparing" && <button style={{ ...S.btnAction, background: "#1a0a2e", color: "#a78bfa", borderColor: "#7c3aed" }} onClick={() => { setStatus(oid, "ready"); setSel([oid, { ...o, status: "ready" }]); }}>✨ Listo para entrega</button>}
         </div>
       </div>
@@ -310,7 +340,7 @@ function EncargadoDash({ user, onLogout }) {
               <div style={{ fontSize: 13, color: "#ccc", marginBottom: 3 }}>👤 {o.customer?.name}</div>
               <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>{(o.items || []).map(i => `${i.qty}x ${i.name}`).join(", ")}</div>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontWeight: 700, color: "#f97316" }}>${o.total?.toFixed(2)}</span><span style={{ fontSize: 11, color: "#555" }}>{timeAgo(o.createdAt)}</span></div>
-              {o.status === "assigned" && <button style={{ ...S.btnQuick, marginTop: 8 }} onClick={e => { e.stopPropagation(); setStatus(id, "preparing"); }}>👨‍🍳 Preparar</button>}
+              {o.status === "assigned" && <button style={{ ...S.btnQuick, marginTop: 8 }} onClick={e => { e.stopPropagation(); setSel([id, o]); setView("detail"); }}>👨‍🍳 Aceptar pedido</button>}
               {o.status === "preparing" && <button style={{ ...S.btnQuick, marginTop: 8, background: "#1a0a2e", color: "#a78bfa", borderColor: "#7c3aed" }} onClick={e => { e.stopPropagation(); setStatus(id, "ready"); }}>✨ Listo</button>}
             </div>);
         })}
@@ -585,12 +615,81 @@ function TrackingView({ orderId }) {
         ); })}
       </div>
       <div style={{ textAlign: "center", marginBottom: 20 }}><span style={{ ...S.badge, background: st.color, fontSize: 14, padding: "6px 16px" }}>{st.icon} {st.label}</span></div>
+      {(order.status === "preparing" || order.status === "assigned") && order.prepStartedAt && order.prepMinutes && (
+        <CountdownTimer prepStartedAt={order.prepStartedAt} prepMinutes={order.prepMinutes} />
+      )}
+      {(order.status === "preparing" || order.status === "assigned") && !order.prepStartedAt && (
+        <div style={{ textAlign: "center", padding: 20, background: "#111", borderRadius: 12, marginBottom: 16 }}>
+          <p style={{ fontSize: 30 }}>👨‍🍳</p>
+          <p style={{ color: "#888", fontSize: 14 }}>Tu pedido está siendo procesado</p>
+        </div>
+      )}
+      {order.status === "ready" && (
+        <div style={{ textAlign: "center", padding: 20, background: "#0a0a2e", borderRadius: 12, marginBottom: 16, border: "1px solid #2a2a4e" }}>
+          <p style={{ fontSize: 36 }}>✨</p>
+          <p style={{ color: "#a78bfa", fontSize: 16, fontWeight: 700 }}>¡Tu pedido está listo!</p>
+          <p style={{ color: "#888", fontSize: 13 }}>Esperando motorista para la entrega</p>
+        </div>
+      )}
       {order.status === "on_the_way" && loc && (<><div id="tmap" style={{ width: "100%", height: 300, borderRadius: 12, border: "1px solid #333", marginBottom: 8 }} /><p style={{ textAlign: "center", fontSize: 12, color: "#666" }}>🏍️ Tu motorista viene en camino</p></>)}
       {order.status === "on_the_way" && !loc && <div style={{ textAlign: "center", padding: 20, background: "#111", borderRadius: 12, marginBottom: 16 }}><p style={{ fontSize: 30 }}>🏍️</p><p style={{ color: "#888", fontSize: 14 }}>Esperando GPS del motorista...</p></div>}
       {order.status === "delivered" && <div style={{ textAlign: "center", padding: 20, background: "#0a1a0a", borderRadius: 12, marginBottom: 16, border: "1px solid #1a3a1a" }}><p style={{ fontSize: 40 }}>🎉</p><p style={{ color: "#4ade80", fontSize: 16, fontWeight: 700 }}>¡Pedido entregado!</p></div>}
       <div style={{ ...S.card }}><h3 style={S.secTitle}>📋 Tu pedido</h3>{(order.items || []).map((it, i) => <div key={i} style={S.row}><span>{it.qty}x {it.name}</span><span style={{ fontWeight: 700 }}>${(it.price * it.qty).toFixed(2)}</span></div>)}<div style={{ ...S.row, borderTop: "1px solid #333", marginTop: 8, paddingTop: 8 }}><span style={{ fontWeight: 800 }}>Total</span><span style={{ fontWeight: 800, color: "#f97316" }}>${order.total?.toFixed(2)}</span></div></div>
       {order.driverName && <div style={S.card}><h3 style={S.secTitle}>🏍️ Tu motorista</h3><p style={{ color: "#fff", fontSize: 15, margin: "2px 0", fontWeight: 600 }}>{order.driverName}</p></div>}
       <div style={S.footer}>Freakie Dogs © 2026 🌭🔥</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// COUNTDOWN TIMER
+// ═══════════════════════════════════════════════
+function CountdownTimer({ prepStartedAt, prepMinutes }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const endTime = prepStartedAt + prepMinutes * 60 * 1000;
+  const remaining = Math.max(0, endTime - now);
+  const mins = Math.floor(remaining / 60000);
+  const secs = Math.floor((remaining % 60000) / 1000);
+  const progress = 1 - remaining / (prepMinutes * 60 * 1000);
+  const isOvertime = remaining === 0;
+  const circumference = 2 * Math.PI * 54;
+  const dashOffset = circumference * (1 - progress);
+
+  return (
+    <div style={{ textAlign: "center", padding: "20px 0", marginBottom: 16 }}>
+      <div style={{ position: "relative", width: 140, height: 140, margin: "0 auto 12px" }}>
+        <svg width="140" height="140" viewBox="0 0 140 140" style={{ transform: "rotate(-90deg)" }}>
+          <circle cx="70" cy="70" r="54" fill="none" stroke="#222" strokeWidth="8" />
+          <circle cx="70" cy="70" r="54" fill="none"
+            stroke={isOvertime ? "#10b981" : progress > 0.75 ? "#ef4444" : progress > 0.5 ? "#f59e0b" : "#3b82f6"}
+            strokeWidth="8" strokeLinecap="round"
+            strokeDasharray={circumference} strokeDashoffset={dashOffset}
+            style={{ transition: "stroke-dashoffset 1s linear, stroke 0.5s" }} />
+        </svg>
+        <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          {isOvertime ? (
+            <>
+              <div style={{ fontSize: 28, marginBottom: 2 }}>✨</div>
+              <div style={{ fontSize: 13, color: "#10b981", fontWeight: 700 }}>¡Casi listo!</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 32, fontWeight: 800, color: "#fff", fontFamily: "monospace", letterSpacing: 2 }}>
+                {String(mins).padStart(2, "0")}:{String(secs).padStart(2, "0")}
+              </div>
+              <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>minutos restantes</div>
+            </>
+          )}
+        </div>
+      </div>
+      <p style={{ color: "#888", fontSize: 13, margin: 0 }}>
+        {isOvertime ? "Tu pedido está casi listo para salir" : "Estamos preparando tu pedido con cariño 🌭"}
+      </p>
     </div>
   );
 }
