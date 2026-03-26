@@ -488,8 +488,11 @@ function DriverDash({ user, onLogout }) {
                 <span style={{ fontWeight: 700, color: "#f97316" }}>${o.total?.toFixed(2)}</span>
                 <span style={{ fontSize: 12, color: "#888" }}>{o.payment === "cash" ? "💵 Efectivo" : o.payment === "transfer" ? "🏦 Transferencia" : "💳 Tarjeta"}</span>
               </div>
-              {(o.status === "ready" || o.status === "assigned" || o.status === "preparing") && (
+              {o.status === "ready" && (
                 <button style={{ width: "100%", padding: "12px", background: "#1a1a4a", color: "#818cf8", border: "2px solid #4f46e5", borderRadius: 8, fontSize: 15, fontWeight: 700, cursor: "pointer" }} onClick={() => startDelivery(id)}>🏍️ Iniciar entrega</button>
+              )}
+              {(o.status === "assigned" || o.status === "preparing") && (
+                <div style={{ width: "100%", padding: "12px", background: "#1a1a1a", border: "1px solid #333", borderRadius: 8, fontSize: 14, color: "#666", textAlign: "center" }}>⏳ Esperando preparación...</div>
               )}
               {o.status === "on_the_way" && (
                 <div style={{ display: "flex", gap: 8 }}>
