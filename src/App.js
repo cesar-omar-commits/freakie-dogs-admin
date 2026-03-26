@@ -332,11 +332,13 @@ function AsignadorDash({ user, onLogout }) {
   // Drivers of my branch only
   const myDrivers = Object.entries(users).filter(([, u]) => u.role === "driver" && u.branch === user.branch);
 
-  // Orders: ready + on_the_way for my branch
+  // Orders: all active orders for my branch (from assigned onwards)
   const myOrders = Object.entries(orders)
-    .filter(([, o]) => o.branch === user.branch && ["ready", "on_the_way"].includes(o.status))
+    .filter(([, o]) => o.branch === user.branch && ["assigned", "preparing", "ready", "on_the_way"].includes(o.status))
     .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
 
+  const assignedCount = myOrders.filter(([, o]) => o.status === "assigned").length;
+  const preparingCount = myOrders.filter(([, o]) => o.status === "preparing").length;
   const readyCount = myOrders.filter(([, o]) => o.status === "ready").length;
   const onWayCount = myOrders.filter(([, o]) => o.status === "on_the_way").length;
 
@@ -384,11 +386,12 @@ function AsignadorDash({ user, onLogout }) {
     <div style={S.container}>
       <div style={S.topBar}><div><h1 style={S.logo}>📋 {getBranch(user.branch).name}</h1><p style={{ fontSize: 12, color: "#8b5cf6", margin: 0 }}>Asignador de Motoristas</p></div><button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={onLogout}>Salir</button></div>
       <div style={S.statsRow}>
+        <div style={{ ...S.statCard, borderColor: "#6366f1", flex: 1 }}><div style={{ fontSize: 22, fontWeight: 800, color: "#6366f1" }}>{assignedCount}</div><div style={{ fontSize: 10, color: "#999" }}>Asignados</div></div>
+        <div style={{ ...S.statCard, borderColor: "#3b82f6", flex: 1 }}><div style={{ fontSize: 22, fontWeight: 800, color: "#3b82f6" }}>{preparingCount}</div><div style={{ fontSize: 10, color: "#999" }}>Preparando</div></div>
         <div style={{ ...S.statCard, borderColor: "#8b5cf6", flex: 1 }}><div style={{ fontSize: 22, fontWeight: 800, color: "#8b5cf6" }}>{readyCount}</div><div style={{ fontSize: 10, color: "#999" }}>Listos</div></div>
         <div style={{ ...S.statCard, borderColor: "#a855f7", flex: 1 }}><div style={{ fontSize: 22, fontWeight: 800, color: "#a855f7" }}>{onWayCount}</div><div style={{ fontSize: 10, color: "#999" }}>En camino</div></div>
-        <div style={{ ...S.statCard, borderColor: "#10b981", flex: 1 }}><div style={{ fontSize: 22, fontWeight: 800, color: "#10b981" }}>{myDrivers.length}</div><div style={{ fontSize: 10, color: "#999" }}>Drivers</div></div>
       </div>
-      {myOrders.length === 0 ? <div style={S.empty}><p style={{ fontSize: 36 }}>📭</p><p>No hay pedidos listos</p></div> :
+      {myOrders.length === 0 ? <div style={S.empty}><p style={{ fontSize: 36 }}>📭</p><p>No hay pedidos</p></div> :
         myOrders.map(([id, o]) => {
           const st = getStatus(o.status);
           return (
