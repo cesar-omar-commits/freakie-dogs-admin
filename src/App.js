@@ -344,7 +344,11 @@ function AsignadorDash({ user, onLogout }) {
 
   const assignDriver = async (oid, driverId) => {
     const driver = users[driverId];
-    await fbUpdate(`orders/${oid}`, { driverId, driverName: driver?.name || "", driverUserId: driverId });
+    await fbUpdate(`orders/${oid}`, { driverId: driverId || null, driverName: driver?.name || "", driverUserId: driverId || null });
+    // Update selected order locally so UI reflects immediately
+    if (sel && sel[0] === oid) {
+      setSel([oid, { ...sel[1], driverId: driverId || null, driverName: driver?.name || "", driverUserId: driverId || null }]);
+    }
     load();
   };
 
@@ -542,11 +546,17 @@ function TrackingView({ orderId }) {
 
   const initMap = () => {
     if (!window.L || !document.getElementById("tmap") || !loc) return;
-    const map = window.L.map("tmap").setView([loc.lat, loc.lng], 16);
-    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OSM" }).addTo(map);
-    const icon = window.L.divIcon({ html: '<div style="font-size:28px">🏍️</div>', iconSize: [36, 36], iconAnchor: [18, 18], className: "" });
+    const map = window.L.map("tmap", { zoomControl: false }).setView([loc.lat, loc.lng], 16);
+    window.L.control.zoom({ position: "bottomright" }).addTo(map);
+    window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "© CARTO" }).addTo(map);
+    const driverSvg = `<div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#f97316;border-radius:50%;box-shadow:0 3px 12px rgba(249,115,22,0.5)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 2l-4 9h8l-1 4"/><path d="M16 11l3 7"/><path d="M8 11L5 18"/></svg></div>`;
+    const icon = window.L.divIcon({ html: driverSvg, iconSize: [40, 40], iconAnchor: [20, 20], className: "" });
     markerRef.current = window.L.marker([loc.lat, loc.lng], { icon }).addTo(map);
-    if (order?.delivery?.coords) { const di = window.L.divIcon({ html: '<div style="font-size:24px">📍</div>', iconSize: [30, 30], iconAnchor: [15, 15], className: "" }); window.L.marker([order.delivery.coords.lat, order.delivery.coords.lng], { icon: di }).addTo(map); }
+    if (order?.delivery?.coords) {
+      const destSvg = `<div style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;background:#10b981;border-radius:50%;box-shadow:0 3px 12px rgba(16,185,129,0.5)"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5 14.5 7.62 14.5 9 13.38 11.5 12 11.5z"/></svg></div>`;
+      const di = window.L.divIcon({ html: destSvg, iconSize: [36, 36], iconAnchor: [18, 18], className: "" });
+      window.L.marker([order.delivery.coords.lat, order.delivery.coords.lng], { icon: di }).addTo(map);
+    }
     mapRef.current = map; setTimeout(() => map.invalidateSize(), 200);
   };
 
