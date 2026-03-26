@@ -162,11 +162,13 @@ function AdminDash({ user, onLogout }) {
     const [o, u] = await Promise.all([fbGet("orders"), fbGet("users")]);
     setOrders(o || {}); setUsers(u || {});
   }, []);
-  useEffect(() => { load(); poll.current = setInterval(load, 5000); return () => clearInterval(poll.current); }, [load]);
+  useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
 
   const assignBranch = async (oid, bid) => {
+    setOrders(prev => ({ ...prev, [oid]: { ...prev[oid], branch: bid, status: "assigned" } }));
+    setView("list"); setSel(null);
     await fbUpdate(`orders/${oid}`, { branch: bid, status: "assigned", assignedAt: Date.now(), assignedBy: user.name });
-    setView("list"); setSel(null); load();
+    load();
   };
 
   const createTest = async () => {
@@ -247,7 +249,7 @@ function AdminDash({ user, onLogout }) {
       </div>
       <button style={{ ...S.btnSec, width: "100%", marginBottom: 12 }} onClick={createTest}>🧪 Crear pedido de prueba</button>
       <OrderList orders={flt} onSelect={o => { setSel(o); setView("detail"); }} />
-      <div style={S.footer}>Actualizando cada 5s · Freakie Dogs © 2026</div>
+      <div style={S.footer}>Actualizando cada 2s · Freakie Dogs © 2026</div>
     </div>
   );
 }
@@ -263,13 +265,17 @@ function EncargadoDash({ user, onLogout }) {
   const poll = useRef(null);
 
   const load = useCallback(async () => { setOrders((await fbGet("orders")) || {}); }, []);
-  useEffect(() => { load(); poll.current = setInterval(load, 5000); return () => clearInterval(poll.current); }, [load]);
+  useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
 
   const my = Object.entries(orders).filter(([, o]) => o.branch === user.branch).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
   const flt = filter === "all" ? my : my.filter(([, o]) => o.status === filter);
   const cnt = { assigned: my.filter(([, o]) => o.status === "assigned").length, preparing: my.filter(([, o]) => o.status === "preparing").length, ready: my.filter(([, o]) => o.status === "ready").length };
 
-  const setStatus = async (oid, s) => { await fbUpdate(`orders/${oid}`, { status: s, [`statusUpdates/${s}`]: Date.now() }); load(); };
+  const setStatus = async (oid, s) => {
+    setOrders(prev => ({ ...prev, [oid]: { ...prev[oid], status: s } }));
+    await fbUpdate(`orders/${oid}`, { status: s, [`statusUpdates/${s}`]: Date.now() });
+    load();
+  };
 
   if (view === "detail" && sel) {
     const [oid, o] = sel; const st = getStatus(o.status);
@@ -327,7 +333,7 @@ function AsignadorDash({ user, onLogout }) {
     const [o, u] = await Promise.all([fbGet("orders"), fbGet("users")]);
     setOrders(o || {}); setUsers(u || {});
   }, []);
-  useEffect(() => { load(); poll.current = setInterval(load, 5000); return () => clearInterval(poll.current); }, [load]);
+  useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
 
   // Drivers of my branch only
   const myDrivers = Object.entries(users).filter(([, u]) => u.role === "driver" && u.branch === user.branch);
@@ -423,7 +429,7 @@ function DriverDash({ user, onLogout }) {
   const poll = useRef(null);
 
   const load = useCallback(async () => { setOrders((await fbGet("orders")) || {}); }, []);
-  useEffect(() => { load(); poll.current = setInterval(load, 5000); return () => clearInterval(poll.current); }, [load]);
+  useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
   useEffect(() => { return () => { if (gpsRef.current) navigator.geolocation.clearWatch(gpsRef.current); }; }, []);
 
   const myOrders = Object.entries(orders)
@@ -435,7 +441,7 @@ function DriverDash({ user, onLogout }) {
     .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0)).slice(0, 5);
 
   const startDelivery = async (oid) => {
-    await fbUpdate(`orders/${oid}`, { status: "on_the_way", [`statusUpdates/on_the_way`]: Date.now() });
+    setOrders(prev => ({ ...prev, [oid]: { ...prev[oid], status: "on_the_way" } }));
     setActiveDelivery(oid);
     if (navigator.geolocation) {
       gpsRef.current = navigator.geolocation.watchPosition(
@@ -443,14 +449,16 @@ function DriverDash({ user, onLogout }) {
         err => console.error("GPS:", err), { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
       );
     }
+    await fbUpdate(`orders/${oid}`, { status: "on_the_way", [`statusUpdates/on_the_way`]: Date.now() });
     load();
   };
 
   const completeDelivery = async (oid) => {
     if (gpsRef.current) { navigator.geolocation.clearWatch(gpsRef.current); gpsRef.current = null; }
+    setOrders(prev => ({ ...prev, [oid]: { ...prev[oid], status: "delivered" } }));
+    setActiveDelivery(null);
     await fbUpdate(`orders/${oid}`, { status: "delivered", [`statusUpdates/delivered`]: Date.now() });
     await fbSet(`tracking/${oid}`, null);
-    setActiveDelivery(null);
     load();
   };
 
@@ -532,7 +540,7 @@ function TrackingView({ orderId }) {
     if (o) setOrder(o); if (t) setLoc(t); setLoading(false);
   }, [orderId]);
 
-  useEffect(() => { load(); poll.current = setInterval(load, 3000); return () => clearInterval(poll.current); }, [load]);
+  useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
 
   useEffect(() => {
     if (!loc || leafletOk.current) return;
