@@ -634,9 +634,182 @@ function TrackingView({ orderId }) {
       {order.status === "on_the_way" && loc && (<><div id="tmap" style={{ width: "100%", height: 300, borderRadius: 12, border: "1px solid #333", marginBottom: 8 }} /><p style={{ textAlign: "center", fontSize: 12, color: "#666" }}>🏍️ Tu motorista viene en camino</p></>)}
       {order.status === "on_the_way" && !loc && <div style={{ textAlign: "center", padding: 20, background: "#111", borderRadius: 12, marginBottom: 16 }}><p style={{ fontSize: 30 }}>🏍️</p><p style={{ color: "#888", fontSize: 14 }}>Esperando GPS del motorista...</p></div>}
       {order.status === "delivered" && <div style={{ textAlign: "center", padding: 20, background: "#0a1a0a", borderRadius: 12, marginBottom: 16, border: "1px solid #1a3a1a" }}><p style={{ fontSize: 40 }}>🎉</p><p style={{ color: "#4ade80", fontSize: 16, fontWeight: 700 }}>¡Pedido entregado!</p></div>}
+
+      {/* Mini game while waiting */}
+      {!["delivered", "cancelled"].includes(order.status) && (
+        <FreakieRunner />
+      )}
+
       <div style={{ ...S.card }}><h3 style={S.secTitle}>📋 Tu pedido</h3>{(order.items || []).map((it, i) => <div key={i} style={S.row}><span>{it.qty}x {it.name}</span><span style={{ fontWeight: 700 }}>${(it.price * it.qty).toFixed(2)}</span></div>)}<div style={{ ...S.row, borderTop: "1px solid #333", marginTop: 8, paddingTop: 8 }}><span style={{ fontWeight: 800 }}>Total</span><span style={{ fontWeight: 800, color: "#f97316" }}>${order.total?.toFixed(2)}</span></div></div>
       {order.driverName && <div style={S.card}><h3 style={S.secTitle}>🏍️ Tu motorista</h3><p style={{ color: "#fff", fontSize: 15, margin: "2px 0", fontWeight: 600 }}>{order.driverName}</p></div>}
       <div style={S.footer}>Freakie Dogs © 2026 🌭🔥</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// FREAKIE RUNNER — Mini game while waiting
+// ═══════════════════════════════════════════════
+function FreakieRunner() {
+  const canvasRef = useRef(null);
+  const gameRef = useRef({ running: false, score: 0, highScore: 0, speed: 3, dog: { y: 0, vy: 0, grounded: true }, obstacles: [], frame: 0 });
+  const rafRef = useRef(null);
+  const [score, setScore] = useState(0);
+  const [highScore, setHighScore] = useState(0);
+  const [gameOver, setGameOver] = useState(false);
+  const [started, setStarted] = useState(false);
+
+  const W = 340, H = 160;
+  const GROUND = H - 30;
+  const DOG_W = 28, DOG_H = 22;
+  const GRAVITY = 0.6;
+  const JUMP = -10;
+  const obstacleEmojis = ["🍔", "🌶️", "🔥", "🧀", "🥤"];
+
+  const startGame = useCallback(() => {
+    const g = gameRef.current;
+    g.running = true; g.score = 0; g.speed = 3.5; g.frame = 0;
+    g.dog = { y: GROUND - DOG_H, vy: 0, grounded: true };
+    g.obstacles = [];
+    setScore(0); setGameOver(false); setStarted(true);
+    if (!rafRef.current) loop();
+  }, []);
+
+  const jump = useCallback(() => {
+    const g = gameRef.current;
+    if (!g.running) { startGame(); return; }
+    if (g.dog.grounded) { g.dog.vy = JUMP; g.dog.grounded = false; }
+  }, [startGame]);
+
+  // Touch and keyboard controls
+  useEffect(() => {
+    const onKey = (e) => { if (e.code === "Space" || e.code === "ArrowUp") { e.preventDefault(); jump(); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [jump]);
+
+  const loop = useCallback(() => {
+    const g = gameRef.current;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    // Update
+    if (g.running) {
+      g.frame++;
+      g.score = Math.floor(g.frame / 6);
+      setScore(g.score);
+
+      // Dog physics
+      g.dog.vy += GRAVITY;
+      g.dog.y += g.dog.vy;
+      if (g.dog.y >= GROUND - DOG_H) {
+        g.dog.y = GROUND - DOG_H;
+        g.dog.vy = 0;
+        g.dog.grounded = true;
+      }
+
+      // Spawn obstacles
+      if (g.frame % Math.max(40, 80 - Math.floor(g.score / 10)) === 0) {
+        const h = 20 + Math.random() * 14;
+        g.obstacles.push({
+          x: W + 10,
+          y: GROUND - h,
+          w: 22, h,
+          emoji: obstacleEmojis[Math.floor(Math.random() * obstacleEmojis.length)],
+        });
+      }
+
+      // Move obstacles
+      g.obstacles.forEach(o => { o.x -= g.speed; });
+      g.obstacles = g.obstacles.filter(o => o.x > -30);
+
+      // Speed up
+      g.speed = 3.5 + g.score * 0.015;
+
+      // Collision
+      const dogBox = { x: 20, y: g.dog.y, w: DOG_W - 6, h: DOG_H - 4 };
+      for (const o of g.obstacles) {
+        if (dogBox.x < o.x + o.w - 4 && dogBox.x + dogBox.w > o.x + 4 && dogBox.y + dogBox.h > o.y + 4) {
+          g.running = false;
+          if (g.score > g.highScore) { g.highScore = g.score; setHighScore(g.score); }
+          setGameOver(true);
+          break;
+        }
+      }
+    }
+
+    // Draw
+    ctx.clearRect(0, 0, W, H);
+
+    // Ground
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, GROUND);
+    ctx.lineTo(W, GROUND);
+    ctx.stroke();
+
+    // Ground dots
+    ctx.fillStyle = "#222";
+    for (let i = 0; i < W; i += 20) {
+      const offset = g.running ? (g.frame * g.speed) % 20 : 0;
+      ctx.fillRect((i - offset + W) % W, GROUND + 5, 8, 1);
+    }
+
+    // Dog (hot dog emoji)
+    ctx.font = `${DOG_H}px serif`;
+    ctx.textBaseline = "top";
+    const bounce = g.dog.grounded && g.running ? Math.sin(g.frame * 0.3) * 2 : 0;
+    ctx.fillText("🌭", 16, g.dog.y + bounce);
+
+    // Obstacles
+    g.obstacles.forEach(o => {
+      ctx.font = `${o.h}px serif`;
+      ctx.fillText(o.emoji, o.x, o.y);
+    });
+
+    // Score
+    ctx.fillStyle = "#666";
+    ctx.font = "bold 13px monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(`${g.score}`, W - 10, 16);
+    if (g.highScore > 0) {
+      ctx.fillStyle = "#444";
+      ctx.font = "11px monospace";
+      ctx.fillText(`HI ${g.highScore}`, W - 10, 32);
+    }
+    ctx.textAlign = "left";
+
+    rafRef.current = requestAnimationFrame(loop);
+  }, []);
+
+  // Cleanup
+  useEffect(() => { return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }; }, []);
+
+  return (
+    <div style={{ background: "#111", borderRadius: 12, border: "1px solid #222", marginBottom: 16, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px 4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>🎮 Jugá mientras esperás</span>
+        {highScore > 0 && <span style={{ fontSize: 11, color: "#f59e0b", fontFamily: "monospace" }}>🏆 {highScore}</span>}
+      </div>
+      <div style={{ position: "relative", cursor: "pointer" }} onClick={jump} onTouchStart={(e) => { e.preventDefault(); jump(); }}>
+        <canvas ref={canvasRef} width={W} height={H} style={{ display: "block", width: "100%", height: "auto", touchAction: "none" }} />
+        {!started && (
+          <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.5)" }}>
+            <p style={{ fontSize: 28, margin: "0 0 4px" }}>🌭</p>
+            <p style={{ color: "#fff", fontSize: 14, fontWeight: 700, margin: "0 0 4px" }}>Freakie Runner</p>
+            <p style={{ color: "#aaa", fontSize: 12, margin: 0 }}>Tocá para saltar</p>
+          </div>
+        )}
+        {gameOver && (
+          <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}>
+            <p style={{ color: "#ef4444", fontSize: 16, fontWeight: 800, margin: "0 0 4px" }}>¡GAME OVER!</p>
+            <p style={{ color: "#f97316", fontSize: 22, fontWeight: 800, fontFamily: "monospace", margin: "0 0 4px" }}>{score}</p>
+            <p style={{ color: "#aaa", fontSize: 12, margin: 0 }}>Tocá para reintentar</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
