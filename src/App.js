@@ -355,13 +355,14 @@ function EncargadoDash({ user, onLogout }) {
 function AsignadorDash({ user, onLogout }) {
   const [orders, setOrders] = useState({});
   const [users, setUsers] = useState({});
+  const [driversLoc, setDriversLoc] = useState({});
   const [view, setView] = useState("list");
   const [sel, setSel] = useState(null);
   const poll = useRef(null);
 
   const load = useCallback(async () => {
-    const [o, u] = await Promise.all([fbGet("orders"), fbGet("users")]);
-    setOrders(o || {}); setUsers(u || {});
+    const [o, u, dl] = await Promise.all([fbGet("orders"), fbGet("users"), fbGet("drivers_location")]);
+    setOrders(o || {}); setUsers(u || {}); setDriversLoc(dl || {});
   }, []);
   useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
 
@@ -444,6 +445,10 @@ function AsignadorDash({ user, onLogout }) {
               </div>
             </div>);
         })}
+
+      {/* Drivers live map */}
+      <DriversMap drivers={myDrivers} driversLoc={driversLoc} branch={user.branch} />
+
       <div style={S.footer}>{getBranch(user.branch).name} · Asignador</div>
     </div>
   );
@@ -475,7 +480,12 @@ function DriverDash({ user, onLogout }) {
     setActiveDelivery(oid);
     if (navigator.geolocation) {
       gpsRef.current = navigator.geolocation.watchPosition(
-        p => { const loc = { lat: p.coords.latitude, lng: p.coords.longitude, timestamp: Date.now(), accuracy: p.coords.accuracy }; fbSet(`tracking/${oid}`, loc); },
+        p => {
+          const loc = { lat: p.coords.latitude, lng: p.coords.longitude, timestamp: Date.now(), accuracy: p.coords.accuracy };
+          fbSet(`tracking/${oid}`, loc);
+          // Also save by driver so asignadores can see all drivers of their branch
+          fbSet(`drivers_location/${user.id}`, { ...loc, name: user.name, branch: user.branch, orderId: oid });
+        },
         err => console.error("GPS:", err), { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
       );
     }
@@ -489,6 +499,7 @@ function DriverDash({ user, onLogout }) {
     setActiveDelivery(null);
     await fbUpdate(`orders/${oid}`, { status: "delivered", [`statusUpdates/delivered`]: Date.now() });
     await fbSet(`tracking/${oid}`, null);
+    await fbSet(`drivers_location/${user.id}`, null);
     load();
   };
 
@@ -643,6 +654,100 @@ function TrackingView({ orderId }) {
       <div style={{ ...S.card }}><h3 style={S.secTitle}>📋 Tu pedido</h3>{(order.items || []).map((it, i) => <div key={i} style={S.row}><span>{it.qty}x {it.name}</span><span style={{ fontWeight: 700 }}>${(it.price * it.qty).toFixed(2)}</span></div>)}<div style={{ ...S.row, borderTop: "1px solid #333", marginTop: 8, paddingTop: 8 }}><span style={{ fontWeight: 800 }}>Total</span><span style={{ fontWeight: 800, color: "#f97316" }}>${order.total?.toFixed(2)}</span></div></div>
       {order.driverName && <div style={S.card}><h3 style={S.secTitle}>🏍️ Tu motorista</h3><p style={{ color: "#fff", fontSize: 15, margin: "2px 0", fontWeight: 600 }}>{order.driverName}</p></div>}
       <div style={S.footer}>Freakie Dogs © 2026 🌭🔥</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// DRIVERS MAP — Live location of drivers for asignador
+// ═══════════════════════════════════════════════
+function DriversMap({ drivers, driversLoc, branch }) {
+  const mapRef = useRef(null);
+  const markersRef = useRef({});
+  const leafletOk = useRef(false);
+  const mapId = `dmap-${branch}`;
+
+  // Get drivers of this branch with location
+  const activeDrivers = drivers
+    .map(([id, d]) => {
+      const loc = driversLoc[id];
+      return loc && loc.branch === branch ? { id, name: d.name, code: d.code, ...loc } : null;
+    })
+    .filter(Boolean);
+
+  // Load Leaflet
+  useEffect(() => {
+    if (leafletOk.current) return;
+    if (window.L) { leafletOk.current = true; initMap(); return; }
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(css);
+    const js = document.createElement("script");
+    js.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    js.onload = () => { leafletOk.current = true; initMap(); };
+    document.head.appendChild(js);
+  }, []);
+
+  const initMap = () => {
+    if (!window.L || !document.getElementById(mapId) || mapRef.current) return;
+    // Default center: Santa Tecla
+    const defaultCenter = activeDrivers.length > 0
+      ? [activeDrivers[0].lat, activeDrivers[0].lng]
+      : [13.6783, -89.2808];
+    const map = window.L.map(mapId, { zoomControl: true }).setView(defaultCenter, 14);
+    window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "© CARTO" }).addTo(map);
+    mapRef.current = map;
+    setTimeout(() => map.invalidateSize(), 200);
+    updateMarkers();
+  };
+
+  const updateMarkers = () => {
+    if (!window.L || !mapRef.current) return;
+    const map = mapRef.current;
+    const L = window.L;
+
+    // Remove markers for drivers no longer active
+    Object.keys(markersRef.current).forEach(id => {
+      if (!activeDrivers.find(d => d.id === id)) {
+        map.removeLayer(markersRef.current[id]);
+        delete markersRef.current[id];
+      }
+    });
+
+    // Add/update markers
+    activeDrivers.forEach(d => {
+      const html = `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none"><div style="background:#f97316;color:#fff;padding:3px 8px;border-radius:8px;font-size:10px;font-weight:700;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.5);margin-bottom:2px">${d.name}</div><div style="width:36px;height:36px;background:#f97316;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(249,115,22,0.6);border:2px solid #fff"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 2l-4 9h8l-1 4"/><path d="M16 11l3 7"/><path d="M8 11L5 18"/></svg></div></div>`;
+      const icon = L.divIcon({ html, iconSize: [60, 60], iconAnchor: [30, 50], className: "" });
+
+      if (markersRef.current[d.id]) {
+        markersRef.current[d.id].setLatLng([d.lat, d.lng]);
+      } else {
+        markersRef.current[d.id] = L.marker([d.lat, d.lng], { icon }).addTo(map);
+      }
+    });
+  };
+
+  // Update markers when driversLoc changes
+  useEffect(() => {
+    if (leafletOk.current) updateMarkers();
+  }, [driversLoc]);
+
+  return (
+    <div style={{ marginTop: 16, marginBottom: 16, background: "#111", borderRadius: 12, border: "1px solid #222", overflow: "hidden" }}>
+      <div style={{ padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #222" }}>
+        <span style={{ fontSize: 13, color: "#999", fontWeight: 700 }}>📡 Motoristas en tiempo real</span>
+        <span style={{ fontSize: 11, color: "#10b981", fontWeight: 600 }}>{activeDrivers.length} activos</span>
+      </div>
+      {activeDrivers.length === 0 ? (
+        <div style={{ padding: "30px 20px", textAlign: "center", color: "#666", fontSize: 13 }}>
+          <p style={{ fontSize: 28, margin: "0 0 4px" }}>🏍️</p>
+          <p style={{ margin: 0 }}>Ningún motorista compartiendo ubicación</p>
+          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#555" }}>El mapa aparecerá cuando algún motorista inicie una entrega</p>
+        </div>
+      ) : (
+        <div id={mapId} style={{ width: "100%", height: 320 }} />
+      )}
     </div>
   );
 }
