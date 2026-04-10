@@ -1671,21 +1671,19 @@ function DriversMap({ drivers, driversLoc, branch }) {
 
   // Load Leaflet
   useEffect(() => {
-    if (leafletOk.current) return;
-    if (window.L) { leafletOk.current = true; initMap(); return; }
+    if (leafletOk.current || window.L) { leafletOk.current = true; return; }
     const css = document.createElement("link");
     css.rel = "stylesheet";
     css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
     document.head.appendChild(css);
     const js = document.createElement("script");
     js.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    js.onload = () => { leafletOk.current = true; initMap(); };
+    js.onload = () => { leafletOk.current = true; };
     document.head.appendChild(js);
   }, []);
 
   const initMap = () => {
     if (!window.L || !document.getElementById(mapId) || mapRef.current) return;
-    // Default center: Santa Tecla
     const defaultCenter = activeDrivers.length > 0
       ? [activeDrivers[0].lat, activeDrivers[0].lng]
       : [13.6783, -89.2808];
@@ -1701,7 +1699,6 @@ function DriversMap({ drivers, driversLoc, branch }) {
     const map = mapRef.current;
     const L = window.L;
 
-    // Remove markers for drivers no longer active
     Object.keys(markersRef.current).forEach(id => {
       if (!activeDrivers.find(d => d.id === id)) {
         map.removeLayer(markersRef.current[id]);
@@ -1709,7 +1706,6 @@ function DriversMap({ drivers, driversLoc, branch }) {
       }
     });
 
-    // Add/update markers
     activeDrivers.forEach(d => {
       const html = `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none"><div style="background:#f97316;color:#fff;padding:3px 8px;border-radius:8px;font-size:10px;font-weight:700;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.5);margin-bottom:2px">${d.name}</div><div style="width:36px;height:36px;background:#f97316;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(249,115,22,0.6);border:2px solid #fff"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 2l-4 9h8l-1 4"/><path d="M16 11l3 7"/><path d="M8 11L5 18"/></svg></div></div>`;
       const icon = L.divIcon({ html, iconSize: [60, 60], iconAnchor: [30, 50], className: "" });
@@ -1722,10 +1718,34 @@ function DriversMap({ drivers, driversLoc, branch }) {
     });
   };
 
-  // Update markers when driversLoc changes
+  // Initialize map when drivers appear and Leaflet is loaded
   useEffect(() => {
-    if (leafletOk.current) updateMarkers();
-  }, [driversLoc]);
+    if (activeDrivers.length === 0) {
+      // Clean up map if no drivers
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+        markersRef.current = {};
+      }
+      return;
+    }
+
+    // Wait for Leaflet to be loaded, then init or update
+    const tryInit = () => {
+      if (!window.L) {
+        setTimeout(tryInit, 200);
+        return;
+      }
+      leafletOk.current = true;
+      if (!mapRef.current) {
+        // Wait for the div to be in the DOM
+        setTimeout(() => initMap(), 50);
+      } else {
+        updateMarkers();
+      }
+    };
+    tryInit();
+  }, [driversLoc, activeDrivers.length]);
 
   return (
     <div style={{ marginTop: 16, marginBottom: 16, background: "#111", borderRadius: 12, border: "1px solid #222", overflow: "hidden" }}>
