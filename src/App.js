@@ -43,11 +43,21 @@ function timeAgo(ts) {
 // ═══════════════════════════════════════════════
 async function seedUsers() {
   const existing = await fbGet("users");
-  if (existing && Object.keys(existing).length > 6) return; // Already seeded with all roles
+  if (existing && Object.keys(existing).length > 6) {
+    // Make sure menu editor exists
+    if (!existing.menu_editor) {
+      await fbUpdate("users", {
+        menu_editor: { code: "MENU01", role: "menu_editor", name: "Editor de Menú", branch: null, active: true },
+      });
+    }
+    return;
+  }
 
   const users = {
     // Admin
     admin1: { code: "ADMIN01", role: "admin", name: "Administrador General", branch: null, active: true },
+    // Menu Editor
+    menu_editor: { code: "MENU01", role: "menu_editor", name: "Editor de Menú", branch: null, active: true },
     // Encargados (5)
     enc_ven: { code: "ENC-VEN", role: "encargado", name: "Encargado Venecia", branch: "venecia", active: true },
     enc_lou: { code: "ENC-LOU", role: "encargado", name: "Encargado Lourdes", branch: "lourdes", active: true },
@@ -410,6 +420,7 @@ function MainApp() {
   if (user.role === "encargado") return <EncargadoDash user={user} onLogout={logout} />;
   if (user.role === "asignador") return <AsignadorDash user={user} onLogout={logout} />;
   if (user.role === "driver") return <DriverDash user={user} onLogout={logout} />;
+  if (user.role === "menu_editor") return <MenuEditorDash user={user} onLogout={logout} />;
   return <div style={S.center}><p>Rol desconocido</p></div>;
 }
 
@@ -716,6 +727,345 @@ function AsignadorDash({ user, onLogout }) {
       <DriversMap drivers={myDrivers} driversLoc={driversLoc} branch={user.branch} />
 
       <div style={S.footer}>{getBranch(user.branch).name} · Asignador</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// DRIVER DASHBOARD
+// ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// MENU EDITOR DASHBOARD
+// ═══════════════════════════════════════════════
+function MenuEditorDash({ user, onLogout }) {
+  const [menu, setMenu] = useState({ products: {}, categories: {}, store: {} });
+  const [view, setView] = useState("products"); // products | edit | new | categories
+  const [editingId, setEditingId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all");
+
+  const load = useCallback(async () => {
+    const m = await fbGet("menu");
+    setMenu(m || { products: {}, categories: {}, store: {} });
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const products = Object.values(menu.products || {}).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const categories = Object.values(menu.categories || {}).sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  const filteredProducts = filter === "all" ? products : products.filter(p => p.category === filter);
+
+  const deleteProduct = async (pid) => {
+    if (!window.confirm(`¿Eliminar este producto? Esta acción no se puede deshacer.`)) return;
+    await fbSet(`menu/products/${pid}`, null);
+    load();
+  };
+
+  const saveProduct = async (productData) => {
+    const id = productData.id || `prod-${Date.now()}`;
+    await fbSet(`menu/products/${id}`, { ...productData, id });
+    setView("products");
+    setEditingId(null);
+    load();
+  };
+
+  if (loading) return <div style={S.center}><p style={{ color: "#888" }}>Cargando menú...</p></div>;
+
+  // ── EDIT/NEW PRODUCT ──
+  if (view === "edit" || view === "new") {
+    const editing = view === "edit" ? menu.products[editingId] : null;
+    return (
+      <ProductEditor
+        product={editing}
+        categories={categories}
+        onSave={saveProduct}
+        onCancel={() => { setView("products"); setEditingId(null); }}
+      />
+    );
+  }
+
+  // ── CATEGORIES MANAGEMENT ──
+  if (view === "categories") {
+    return (
+      <CategoriesEditor
+        categories={menu.categories || {}}
+        onClose={() => { setView("products"); load(); }}
+      />
+    );
+  }
+
+  // ── PRODUCTS LIST ──
+  return (
+    <div style={S.container}>
+      <div style={S.topBar}>
+        <div>
+          <h1 style={S.logo}>🍽️ Editor de Menú</h1>
+          <p style={{ fontSize: 12, color: "#10b981", margin: 0 }}>{products.length} productos · {categories.length} categorías</p>
+        </div>
+        <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={onLogout}>Salir</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <button style={{ ...S.btnPrimary, flex: 1 }} onClick={() => { setView("new"); setEditingId(null); }}>+ Nuevo producto</button>
+        <button style={{ ...S.btnSec, flex: 1 }} onClick={() => setView("categories")}>📂 Categorías</button>
+      </div>
+
+      {/* Category filter */}
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 4 }}>
+        <button onClick={() => setFilter("all")} style={{
+          padding: "8px 14px", borderRadius: 20, border: filter === "all" ? "2px solid #f97316" : "1px solid #333",
+          background: filter === "all" ? "#f9731620" : "#111", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap"
+        }}>Todos ({products.length})</button>
+        {categories.map(cat => {
+          const count = products.filter(p => p.category === cat.id).length;
+          return (
+            <button key={cat.id} onClick={() => setFilter(cat.id)} style={{
+              padding: "8px 14px", borderRadius: 20, border: filter === cat.id ? "2px solid #f97316" : "1px solid #333",
+              background: filter === cat.id ? "#f9731620" : "#111", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap"
+            }}>{cat.name} ({count})</button>
+          );
+        })}
+      </div>
+
+      {/* Products list */}
+      {filteredProducts.length === 0 ? (
+        <div style={S.empty}>
+          <p style={{ fontSize: 36 }}>🍽️</p>
+          <p>No hay productos en esta categoría</p>
+        </div>
+      ) : (
+        filteredProducts.map(p => {
+          const cat = categories.find(c => c.id === p.category);
+          return (
+            <div key={p.id} style={{ ...S.orderCard, display: "flex", gap: 12, alignItems: "center" }}>
+              {/* Image or emoji */}
+              <div style={{ width: 56, height: 56, borderRadius: 10, background: "#1a1a1a", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, flexShrink: 0, overflow: "hidden" }}>
+                {p.imageUrl ? <img src={p.imageUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (p.image || "🍽️")}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                  <span style={{ fontWeight: 700, color: "#fff", fontSize: 14 }}>{p.name}</span>
+                  {p.badge && <span style={{ ...S.badge, background: "#f97316", fontSize: 9 }}>{p.badge}</span>}
+                </div>
+                <div style={{ fontSize: 12, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.description}</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                  <span style={{ fontWeight: 800, color: "#f97316", fontSize: 14 }}>${p.price?.toFixed(2)}</span>
+                  {cat && <span style={{ fontSize: 11, color: "#666" }}>📂 {cat.name}</span>}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <button style={{ ...S.btnSmall, padding: "6px 10px" }} onClick={() => { setEditingId(p.id); setView("edit"); }}>✏️</button>
+                <button style={{ ...S.btnSmall, padding: "6px 10px", color: "#ef4444", borderColor: "#7f1d1d" }} onClick={() => deleteProduct(p.id)}>🗑️</button>
+              </div>
+            </div>
+          );
+        })
+      )}
+
+      <div style={S.footer}>Editor de Menú · Cambios visibles inmediatamente en el menú del cliente</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// PRODUCT EDITOR (Create/Edit)
+// ═══════════════════════════════════════════════
+function ProductEditor({ product, categories, onSave, onCancel }) {
+  const isNew = !product;
+  const [name, setName] = useState(product?.name || "");
+  const [description, setDescription] = useState(product?.description || "");
+  const [price, setPrice] = useState(product?.price || "");
+  const [category, setCategory] = useState(product?.category || categories[0]?.id || "");
+  const [image, setImage] = useState(product?.image || "🍽️");
+  const [imageUrl, setImageUrl] = useState(product?.imageUrl || "");
+  const [badge, setBadge] = useState(product?.badge || "");
+  const [order, setOrder] = useState(product?.order || 99);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name.trim() || !price || !category) {
+      alert("Completá nombre, precio y categoría");
+      return;
+    }
+    setSaving(true);
+    await onSave({
+      id: product?.id,
+      name: name.trim(),
+      description: description.trim(),
+      price: parseFloat(price),
+      category,
+      image: image.trim() || "🍽️",
+      imageUrl: imageUrl.trim(),
+      badge: badge.trim(),
+      order: parseInt(order) || 99,
+      modifierGroups: product?.modifierGroups || [],
+    });
+    setSaving(false);
+  };
+
+  return (
+    <div style={S.container}>
+      <div style={S.topBar}>
+        <button style={S.backBtn} onClick={onCancel}>← Cancelar</button>
+        <h2 style={S.topTitle}>{isNew ? "Nuevo producto" : "Editar producto"}</h2>
+      </div>
+
+      <div style={S.card}>
+        <div style={{ marginBottom: 14 }}>
+          <label style={S.label}>Nombre *</label>
+          <input style={S.fieldInput} value={name} onChange={e => setName(e.target.value)} placeholder="Freakie Burger" />
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={S.label}>Descripción</label>
+          <textarea style={{ ...S.fieldInput, minHeight: 70, resize: "vertical" }} value={description} onChange={e => setDescription(e.target.value)} placeholder="Descripción del producto..." />
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 1 }}>
+            <label style={S.label}>Precio (USD) *</label>
+            <input style={S.fieldInput} type="number" step="0.01" value={price} onChange={e => setPrice(e.target.value)} placeholder="9.99" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={S.label}>Orden</label>
+            <input style={S.fieldInput} type="number" value={order} onChange={e => setOrder(e.target.value)} placeholder="1" />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={S.label}>Categoría *</label>
+          <select style={S.fieldInput} value={category} onChange={e => setCategory(e.target.value)}>
+            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={S.label}>Emoji (mostrado si no hay imagen)</label>
+          <input style={S.fieldInput} value={image} onChange={e => setImage(e.target.value)} placeholder="🍔" maxLength={6} />
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={S.label}>URL de imagen (opcional, próximamente subida directa)</label>
+          <input style={S.fieldInput} value={imageUrl} onChange={e => setImageUrl(e.target.value)} placeholder="https://..." />
+          {imageUrl && <img src={imageUrl} alt="preview" style={{ marginTop: 8, maxWidth: 120, borderRadius: 8 }} />}
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={S.label}>Etiqueta (ej: "Popular", "Nuevo", "Más vendido")</label>
+          <input style={S.fieldInput} value={badge} onChange={e => setBadge(e.target.value)} placeholder="Popular" />
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+          <button style={{ ...S.btnPrimary, flex: 2 }} onClick={handleSave} disabled={saving}>
+            {saving ? "Guardando..." : isNew ? "Crear producto" : "Guardar cambios"}
+          </button>
+          <button style={{ ...S.btnSec, flex: 1 }} onClick={onCancel}>Cancelar</button>
+        </div>
+
+        {!isNew && (
+          <p style={{ fontSize: 11, color: "#555", textAlign: "center", marginTop: 12 }}>
+            Los modificadores (extras, salsas, etc) se mantienen al editar
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// CATEGORIES EDITOR
+// ═══════════════════════════════════════════════
+function CategoriesEditor({ categories, onClose }) {
+  const [cats, setCats] = useState(categories);
+  const [editing, setEditing] = useState(null); // category id being edited
+  const [newName, setNewName] = useState("");
+  const [newEmoji, setNewEmoji] = useState("");
+
+  const addCategory = async () => {
+    if (!newName.trim()) return;
+    const id = newName.toLowerCase().replace(/[^a-z0-9]+/g, "_").substring(0, 20);
+    const order = Math.max(0, ...Object.values(cats).map(c => c.order || 0)) + 1;
+    const newCat = { id, name: newName.trim(), emoji: newEmoji.trim() || "📂", order };
+    await fbSet(`menu/categories/${id}`, newCat);
+    setCats({ ...cats, [id]: newCat });
+    setNewName(""); setNewEmoji("");
+  };
+
+  const deleteCategory = async (id) => {
+    if (!window.confirm("¿Eliminar esta categoría? Los productos en esta categoría perderán su clasificación.")) return;
+    await fbSet(`menu/categories/${id}`, null);
+    const updated = { ...cats };
+    delete updated[id];
+    setCats(updated);
+  };
+
+  const updateCategory = async (id, updates) => {
+    const updated = { ...cats[id], ...updates };
+    await fbSet(`menu/categories/${id}`, updated);
+    setCats({ ...cats, [id]: updated });
+    setEditing(null);
+  };
+
+  const sortedCats = Object.values(cats).sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  return (
+    <div style={S.container}>
+      <div style={S.topBar}>
+        <button style={S.backBtn} onClick={onClose}>← Volver</button>
+        <h2 style={S.topTitle}>Categorías</h2>
+      </div>
+
+      <div style={S.card}>
+        <h3 style={S.secTitle}>+ Agregar nueva categoría</h3>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <input style={{ ...S.fieldInput, flex: 1 }} value={newEmoji} onChange={e => setNewEmoji(e.target.value)} placeholder="🍕" maxLength={4} />
+          <input style={{ ...S.fieldInput, flex: 3 }} value={newName} onChange={e => setNewName(e.target.value)} placeholder="Nombre de la categoría" />
+        </div>
+        <button style={S.btnPrimary} onClick={addCategory}>Agregar</button>
+      </div>
+
+      {sortedCats.map(c => (
+        <div key={c.id} style={S.card}>
+          {editing === c.id ? (
+            <CategoryEditForm category={c} onSave={(updates) => updateCategory(c.id, updates)} onCancel={() => setEditing(null)} />
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ fontSize: 32 }}>{c.emoji || "📂"}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, color: "#fff", fontSize: 15 }}>{c.name}</div>
+                <div style={{ fontSize: 12, color: "#888" }}>ID: {c.id} · Orden: {c.order || 0}</div>
+              </div>
+              <button style={S.btnSmall} onClick={() => setEditing(c.id)}>✏️</button>
+              <button style={{ ...S.btnSmall, color: "#ef4444", borderColor: "#7f1d1d" }} onClick={() => deleteCategory(c.id)}>🗑️</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CategoryEditForm({ category, onSave, onCancel }) {
+  const [name, setName] = useState(category.name);
+  const [emoji, setEmoji] = useState(category.emoji || "");
+  const [order, setOrder] = useState(category.order || 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <input style={{ ...S.fieldInput, flex: 1 }} value={emoji} onChange={e => setEmoji(e.target.value)} placeholder="📂" maxLength={4} />
+        <input style={{ ...S.fieldInput, flex: 3 }} value={name} onChange={e => setName(e.target.value)} />
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <label style={S.label}>Orden</label>
+        <input style={S.fieldInput} type="number" value={order} onChange={e => setOrder(e.target.value)} />
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button style={S.btnPrimary} onClick={() => onSave({ name: name.trim(), emoji: emoji.trim(), order: parseInt(order) || 0 })}>Guardar</button>
+        <button style={S.btnSec} onClick={onCancel}>Cancelar</button>
+      </div>
     </div>
   );
 }
@@ -1300,4 +1650,6 @@ const S = {
   btnQuick: { width: "100%", padding: "10px", background: "#0a1a3a", color: "#60a5fa", border: "1px solid #2563eb", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" },
   empty: { textAlign: "center", padding: "40px 20px", color: "#666", fontSize: 14 },
   footer: { textAlign: "center", padding: "20px 0", fontSize: 11, color: "#444" },
+  label: { display: "block", fontSize: 12, color: "#999", marginBottom: 6, fontWeight: 600 },
+  fieldInput: { width: "100%", padding: "11px 13px", background: "#1a1a1a", border: "1px solid #333", borderRadius: 8, color: "#fff", fontSize: 14, boxSizing: "border-box", outline: "none", fontFamily: "inherit" },
 };
