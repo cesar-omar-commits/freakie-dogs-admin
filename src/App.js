@@ -60,12 +60,11 @@ function timeAgo(ts) {
 async function seedUsers() {
   const existing = await fbGet("users");
   if (existing && Object.keys(existing).length > 6) {
-    // Make sure menu editor exists
-    if (!existing.menu_editor) {
-      await fbUpdate("users", {
-        menu_editor: { code: "MENU01", role: "menu_editor", name: "Editor de Menú", branch: null, active: true },
-      });
-    }
+    // Make sure menu editor and stats exist
+    const updates = {};
+    if (!existing.menu_editor) updates.menu_editor = { code: "MENU01", role: "menu_editor", name: "Editor de Menú", branch: null, active: true };
+    if (!existing.stats_user) updates.stats_user = { code: "STATS01", role: "stats", name: "Analytics", branch: null, active: true };
+    if (Object.keys(updates).length > 0) await fbUpdate("users", updates);
     return;
   }
 
@@ -437,6 +436,7 @@ function MainApp() {
   if (user.role === "asignador") return <AsignadorDash user={user} onLogout={logout} />;
   if (user.role === "driver") return <DriverDash user={user} onLogout={logout} />;
   if (user.role === "menu_editor") return <MenuEditorDash user={user} onLogout={logout} />;
+  if (user.role === "stats") return <StatsDash user={user} onLogout={logout} />;
   return <div style={S.center}><p>Rol desconocido</p></div>;
 }
 
@@ -1182,6 +1182,268 @@ function CategoryEditForm({ category, onSave, onCancel }) {
         <button style={S.btnPrimary} onClick={() => onSave({ name: name.trim(), emoji: emoji.trim(), order: parseInt(order) || 0 })}>Guardar</button>
         <button style={S.btnSec} onClick={onCancel}>Cancelar</button>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// STATS DASHBOARD — Analytics
+// ═══════════════════════════════════════════════
+function StatsDash({ user, onLogout }) {
+  const [orders, setOrders] = useState({});
+  const [users, setUsers] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState("all"); // today | week | month | all
+  const [branchFilter, setBranchFilter] = useState("all");
+
+  useEffect(() => {
+    async function load() {
+      const [o, u] = await Promise.all([fbGet("orders"), fbGet("users")]);
+      setOrders(o || {}); setUsers(u || {}); setLoading(false);
+    }
+    load();
+  }, []);
+
+  if (loading) return <div style={S.center}><p style={{ color: "#888" }}>Cargando analytics...</p></div>;
+
+  const now = Date.now();
+  const DAY = 86400000;
+  const allOrders = Object.entries(orders);
+
+  // Period filter
+  const periodFilter = (ts) => {
+    if (period === "today") return now - ts < DAY;
+    if (period === "week") return now - ts < DAY * 7;
+    if (period === "month") return now - ts < DAY * 30;
+    return true;
+  };
+
+  // Apply filters
+  const filtered = allOrders.filter(([, o]) => {
+    if (!periodFilter(o.createdAt || 0)) return false;
+    if (branchFilter !== "all" && o.branch !== branchFilter) return false;
+    return true;
+  });
+
+  const delivered = filtered.filter(([, o]) => o.status === "delivered");
+  const cancelled = filtered.filter(([, o]) => o.status === "cancelled");
+  const active = filtered.filter(([, o]) => !["delivered", "cancelled"].includes(o.status));
+
+  // Revenue
+  const totalRevenue = delivered.reduce((s, [, o]) => s + (o.total || 0), 0);
+  const avgTicket = delivered.length > 0 ? totalRevenue / delivered.length : 0;
+
+  // Products ranking
+  const productCounts = {};
+  delivered.forEach(([, o]) => {
+    (o.items || []).forEach(it => {
+      const key = it.name || "Desconocido";
+      productCounts[key] = (productCounts[key] || 0) + (it.qty || 1);
+    });
+  });
+  const topProducts = Object.entries(productCounts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  // Branch stats
+  const branchStats = {};
+  BRANCHES.forEach(b => { branchStats[b.id] = { orders: 0, revenue: 0, delivered: 0, cancelled: 0, prepTimes: [], deliveryTimes: [] }; });
+  filtered.forEach(([, o]) => {
+    const bid = o.branch;
+    if (bid && branchStats[bid]) {
+      branchStats[bid].orders++;
+      if (o.status === "delivered") {
+        branchStats[bid].delivered++;
+        branchStats[bid].revenue += o.total || 0;
+        if (o.prepMinutes) branchStats[bid].prepTimes.push(o.prepMinutes);
+        if (o.statusUpdates?.on_the_way && o.statusUpdates?.delivered) {
+          const deliveryMin = (o.statusUpdates.delivered - o.statusUpdates.on_the_way) / 60000;
+          if (deliveryMin > 0 && deliveryMin < 180) branchStats[bid].deliveryTimes.push(deliveryMin);
+        }
+      }
+      if (o.status === "cancelled") branchStats[bid].cancelled++;
+    }
+  });
+
+  // Payment methods
+  const payments = { cash: 0, transfer: 0, card: 0 };
+  delivered.forEach(([, o]) => { if (o.payment && payments[o.payment] !== undefined) payments[o.payment]++; });
+  const payTotal = Object.values(payments).reduce((a, b) => a + b, 0) || 1;
+
+  // Hourly distribution
+  const hourly = new Array(24).fill(0);
+  delivered.forEach(([, o]) => {
+    if (o.createdAt) {
+      const h = new Date(o.createdAt).getHours();
+      hourly[h]++;
+    }
+  });
+  const maxHourly = Math.max(1, ...hourly);
+
+  // Top drivers
+  const driverCounts = {};
+  delivered.forEach(([, o]) => {
+    if (o.driverName) driverCounts[o.driverName] = (driverCounts[o.driverName] || 0) + 1;
+  });
+  const topDrivers = Object.entries(driverCounts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  // Cities/zones
+  const cityCounts = {};
+  delivered.forEach(([, o]) => {
+    const city = o.delivery?.city || "Sin ciudad";
+    cityCounts[city] = (cityCounts[city] || 0) + 1;
+  });
+  const topCities = Object.entries(cityCounts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  const avg = (arr) => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : "—";
+
+  return (
+    <div style={S.container}>
+      <div style={S.topBar}>
+        <div>
+          <h1 style={S.logo}>📊 Analytics</h1>
+          <p style={{ fontSize: 12, color: "#10b981", margin: 0 }}>Freakie Dogs</p>
+        </div>
+        <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={onLogout}>Salir</button>
+      </div>
+
+      {/* Period selector */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto" }}>
+        {[{ l: "Hoy", v: "today" }, { l: "Semana", v: "week" }, { l: "Mes", v: "month" }, { l: "Todo", v: "all" }].map(p => (
+          <button key={p.v} onClick={() => setPeriod(p.v)} style={{
+            padding: "8px 16px", borderRadius: 20, border: period === p.v ? "2px solid #f97316" : "1px solid #333",
+            background: period === p.v ? "#f9731620" : "#111", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer"
+          }}>{p.l}</button>
+        ))}
+      </div>
+
+      {/* Branch filter */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, overflowX: "auto" }}>
+        <button onClick={() => setBranchFilter("all")} style={{
+          padding: "6px 12px", borderRadius: 20, border: branchFilter === "all" ? "2px solid #3b82f6" : "1px solid #333",
+          background: branchFilter === "all" ? "#3b82f620" : "#111", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer"
+        }}>Todas</button>
+        {BRANCHES.map(b => (
+          <button key={b.id} onClick={() => setBranchFilter(b.id)} style={{
+            padding: "6px 12px", borderRadius: 20, border: branchFilter === b.id ? "2px solid #3b82f6" : "1px solid #333",
+            background: branchFilter === b.id ? "#3b82f620" : "#111", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap"
+          }}>{b.name}</button>
+        ))}
+      </div>
+
+      {/* Main KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+        <div style={S.card}><div style={{ fontSize: 11, color: "#888" }}>💰 Ventas totales</div><div style={{ fontSize: 24, fontWeight: 800, color: "#10b981" }}>${totalRevenue.toFixed(2)}</div></div>
+        <div style={S.card}><div style={{ fontSize: 11, color: "#888" }}>📋 Pedidos</div><div style={{ fontSize: 24, fontWeight: 800, color: "#3b82f6" }}>{delivered.length}</div><div style={{ fontSize: 11, color: "#666" }}>{cancelled.length} cancelados · {active.length} activos</div></div>
+        <div style={S.card}><div style={{ fontSize: 11, color: "#888" }}>🎫 Ticket promedio</div><div style={{ fontSize: 24, fontWeight: 800, color: "#f97316" }}>${avgTicket.toFixed(2)}</div></div>
+        <div style={S.card}><div style={{ fontSize: 11, color: "#888" }}>📊 Tasa de completado</div><div style={{ fontSize: 24, fontWeight: 800, color: "#8b5cf6" }}>{filtered.length ? Math.round(delivered.length / (delivered.length + cancelled.length) * 100) || 0 : 0}%</div></div>
+      </div>
+
+      {/* Top Products */}
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <h3 style={{ ...S.secTitle, marginBottom: 10 }}>🏆 Productos más vendidos</h3>
+        {topProducts.length === 0 ? <p style={{ color: "#666", fontSize: 13 }}>Sin datos</p> :
+          topProducts.map(([name, count], i) => {
+            const maxCount = topProducts[0][1] || 1;
+            return (
+              <div key={name} style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                  <span style={{ fontSize: 13, color: "#ccc" }}>{i + 1}. {name}</span>
+                  <span style={{ fontSize: 13, color: "#f97316", fontWeight: 700 }}>{count}</span>
+                </div>
+                <div style={{ height: 6, borderRadius: 3, background: "#222" }}>
+                  <div style={{ height: 6, borderRadius: 3, background: i === 0 ? "#f97316" : "#f9731660", width: `${(count / maxCount) * 100}%` }} />
+                </div>
+              </div>
+            );
+          })
+        }
+      </div>
+
+      {/* Hourly chart */}
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <h3 style={{ ...S.secTitle, marginBottom: 10 }}>⏰ Pedidos por hora</h3>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 80 }}>
+          {hourly.map((count, h) => (
+            <div key={h} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
+              <div style={{
+                width: "100%", minHeight: 2,
+                height: `${(count / maxHourly) * 60}px`,
+                background: count > 0 ? (h >= 11 && h <= 14 ? "#f97316" : h >= 18 && h <= 21 ? "#8b5cf6" : "#3b82f6") : "#222",
+                borderRadius: "2px 2px 0 0",
+              }} />
+              {h % 3 === 0 && <span style={{ fontSize: 8, color: "#555", marginTop: 2 }}>{h}h</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Branch comparison */}
+      {branchFilter === "all" && (
+        <div style={{ ...S.card, marginBottom: 12 }}>
+          <h3 style={{ ...S.secTitle, marginBottom: 10 }}>📍 Por sucursal</h3>
+          {BRANCHES.map(b => {
+            const bs = branchStats[b.id];
+            if (bs.orders === 0) return null;
+            return (
+              <div key={b.id} style={{ marginBottom: 12, padding: 10, background: "#0a0a0a", borderRadius: 8 }}>
+                <div style={{ fontWeight: 700, color: "#fff", fontSize: 14, marginBottom: 6 }}>📍 {b.name}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                  <div><div style={{ fontSize: 10, color: "#888" }}>Pedidos</div><div style={{ fontSize: 16, fontWeight: 800, color: "#3b82f6" }}>{bs.delivered}</div></div>
+                  <div><div style={{ fontSize: 10, color: "#888" }}>Ventas</div><div style={{ fontSize: 16, fontWeight: 800, color: "#10b981" }}>${bs.revenue.toFixed(0)}</div></div>
+                  <div><div style={{ fontSize: 10, color: "#888" }}>Cancelados</div><div style={{ fontSize: 16, fontWeight: 800, color: "#ef4444" }}>{bs.cancelled}</div></div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
+                  <div><div style={{ fontSize: 10, color: "#888" }}>Prep. promedio</div><div style={{ fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{avg(bs.prepTimes)} min</div></div>
+                  <div><div style={{ fontSize: 10, color: "#888" }}>Entrega promedio</div><div style={{ fontSize: 14, fontWeight: 700, color: "#a855f7" }}>{avg(bs.deliveryTimes)} min</div></div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Payment methods */}
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <h3 style={{ ...S.secTitle, marginBottom: 10 }}>💳 Métodos de pago</h3>
+        {[{ l: "💵 Efectivo", k: "cash", c: "#10b981" }, { l: "🏦 Transferencia", k: "transfer", c: "#3b82f6" }, { l: "💳 Tarjeta", k: "card", c: "#8b5cf6" }].map(p => (
+          <div key={p.k} style={{ marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+              <span style={{ fontSize: 13, color: "#ccc" }}>{p.l}</span>
+              <span style={{ fontSize: 13, color: p.c, fontWeight: 700 }}>{payments[p.k]} ({Math.round(payments[p.k] / payTotal * 100)}%)</span>
+            </div>
+            <div style={{ height: 6, borderRadius: 3, background: "#222" }}>
+              <div style={{ height: 6, borderRadius: 3, background: p.c, width: `${(payments[p.k] / payTotal) * 100}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Top drivers */}
+      {topDrivers.length > 0 && (
+        <div style={{ ...S.card, marginBottom: 12 }}>
+          <h3 style={{ ...S.secTitle, marginBottom: 10 }}>🏍️ Drivers con más entregas</h3>
+          {topDrivers.map(([name, count], i) => (
+            <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1a1a1a" }}>
+              <span style={{ fontSize: 13, color: "#ccc" }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`} {name}</span>
+              <span style={{ fontSize: 13, color: "#10b981", fontWeight: 700 }}>{count} entregas</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Top cities/zones */}
+      {topCities.length > 0 && (
+        <div style={{ ...S.card, marginBottom: 12 }}>
+          <h3 style={{ ...S.secTitle, marginBottom: 10 }}>🏙️ Zonas con más pedidos</h3>
+          {topCities.map(([city, count], i) => (
+            <div key={city} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1a1a1a" }}>
+              <span style={{ fontSize: 13, color: "#ccc" }}>{i + 1}. {city}</span>
+              <span style={{ fontSize: 13, color: "#3b82f6", fontWeight: 700 }}>{count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={S.footer}>Analytics · Freakie Dogs © 2026</div>
     </div>
   );
 }
