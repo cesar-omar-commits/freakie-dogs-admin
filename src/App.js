@@ -98,7 +98,273 @@ async function seedUsers() {
 export default function App() {
   const path = window.location.pathname;
   if (path.startsWith("/track/")) return <TrackingView orderId={path.split("/track/")[1]} />;
+  if (path.startsWith("/migrate")) return <MigrationPage />;
   return <MainApp />;
+}
+
+// ═══════════════════════════════════════════════
+// MIGRATION PAGE — One-time migration of menu data to Firebase
+// ═══════════════════════════════════════════════
+function MigrationPage() {
+  const [status, setStatus] = useState("idle"); // idle | running | done | error
+  const [log, setLog] = useState([]);
+
+  const addLog = (msg) => setLog(prev => [...prev, msg]);
+
+  const migrate = async () => {
+    setStatus("running");
+    setLog([]);
+
+    try {
+      // Check if already migrated
+      addLog("🔍 Verificando si ya hay datos en Firebase...");
+      const existing = await fbGet("menu/products");
+      if (existing && Object.keys(existing).length > 0) {
+        if (!window.confirm("Ya hay productos en Firebase. ¿Seguro que querés sobrescribir todo?")) {
+          addLog("❌ Migración cancelada");
+          setStatus("idle");
+          return;
+        }
+      }
+
+      // Store config
+      addLog("📝 Guardando configuración del negocio...");
+      const STORE_DATA = {
+        name: "Freakie Dogs",
+        tagline: "Ese extra extraordinario 🌭🔥🌭",
+        address: "7 Calle Oriente, Santa Tecla, El Salvador",
+        hours: "10:00 - 21:00",
+        phone: "50360222080",
+        currency: "USD",
+        minOrder: 0,
+        isOpen: true,
+      };
+      await fbSet("menu/store", STORE_DATA);
+
+      // Categories
+      addLog("📂 Guardando categorías...");
+      const CATEGORIES_DATA = {
+        combos: { id: "combos", name: "COMBOS 🔥", emoji: "🔥", order: 1 },
+        burgers: { id: "burgers", name: "FREAKIE BURGER 🍔", emoji: "🍔", order: 2 },
+        hotdogs: { id: "hotdogs", name: "HOT DOGS 🌭", emoji: "🌭", order: 3 },
+        fries: { id: "fries", name: "PAPAS 🍟", emoji: "🍟", order: 4 },
+        drinks: { id: "drinks", name: "BEBIDAS 🥤", emoji: "🥤", order: 5 },
+        extras: { id: "extras", name: "EXTRAS ✨", emoji: "✨", order: 6 },
+      };
+      await fbSet("menu/categories", CATEGORIES_DATA);
+
+      // Modifier templates
+      addLog("⚙️ Guardando plantillas de modificadores...");
+      const MOD_TEMPLATES = {
+        burgerExtras: {
+          name: "Extras",
+          required: false,
+          maxSelections: 7,
+          options: [
+            { id: "jalap", name: "Jalapeños 🌶️", price: 0.50 },
+            { id: "bacon", name: "Tocino 🥓", price: 0.75 },
+            { id: "peperon", name: "Peperroncinis 🌶️", price: 1.00 },
+            { id: "mermtoc", name: "Mermelada de tocino 🥓🍯", price: 1.25 },
+            { id: "carnequeso", name: "Carne y Queso extra 🧀", price: 1.50 },
+            { id: "arosceb", name: "Aros de Cebolla 🧅", price: 1.00 },
+            { id: "goldcheese", name: "Golden Cheese 🧀✨", price: 2.99 },
+            { id: "sincomp", name: "Sin complementos", price: 0 },
+          ],
+        },
+        salsasPapas: {
+          name: "Salsas",
+          required: true,
+          maxSelections: 4,
+          options: [
+            { id: "ketchup", name: "Ketchup", price: 0 },
+            { id: "mayo", name: "Mayonesa", price: 0 },
+            { id: "cheddar", name: "Cheddar", price: 0 },
+            { id: "bbq", name: "BBQ", price: 0 },
+            { id: "ranch", name: "Ranch", price: 0 },
+            { id: "buffalo", name: "Buffalo", price: 0 },
+          ],
+        },
+        sodas: {
+          name: "Bebida",
+          required: true,
+          maxSelections: 1,
+          options: [
+            { id: "coca", name: "Coca Cola", price: 0 },
+            { id: "fanta", name: "Fanta", price: 0 },
+            { id: "sprite", name: "Sprite", price: 0 },
+            { id: "agua", name: "Agua", price: 0 },
+          ],
+        },
+        hotdogSalsas: {
+          name: "Salsas",
+          required: true,
+          maxSelections: 3,
+          options: [
+            { id: "ketchup", name: "Ketchup", price: 0 },
+            { id: "mustard", name: "Mostaza", price: 0 },
+            { id: "mayo", name: "Mayonesa", price: 0 },
+            { id: "cheddar", name: "Cheddar", price: 0 },
+          ],
+        },
+      };
+      await fbSet("menu/modifierTemplates", MOD_TEMPLATES);
+
+      // Products
+      addLog("🍔 Guardando productos...");
+      const PRODUCTS_DATA = {
+        "burger-box": {
+          id: "burger-box", name: "Burger Box",
+          description: "Dos Smashburgers 🍔🍔, dos hot dogs con 8 complementos 🌭🌭 (uno lleva costra de queso 🧀), dos papas 🍟🍟, una orden de jalapeños 🌶️ y dos bebidas 🥤🥤",
+          price: 19.50, image: "🍔📦", imageUrl: "", category: "combos", badge: "Más vendido", order: 1,
+          modifierGroups: [
+            { template: "burgerExtras", name: "Burger 1", id: "b1" },
+            { template: "burgerExtras", name: "Burger 2", id: "b2" },
+            { template: "salsasPapas", name: "Papas 1", id: "p1" },
+            { template: "salsasPapas", name: "Papas 2", id: "p2" },
+            { template: "sodas", name: "Soda 1", id: "s1" },
+            { template: "sodas", name: "Soda 2", id: "s2" },
+          ],
+        },
+        "freakie-duo": {
+          id: "freakie-duo", name: "Freakie Burger Dúo",
+          description: "Dos Smashburgers 🍔🍔 con papas 🍟, salsas y dos bebidas 🥤🥤. Perfecto para compartir.",
+          price: 15.49, image: "🍔🍔", imageUrl: "", category: "combos", badge: "Popular", order: 2,
+          modifierGroups: [
+            { template: "burgerExtras", name: "Burger 1", id: "b1" },
+            { template: "burgerExtras", name: "Burger 2", id: "b2" },
+            { template: "salsasPapas", name: "Papas 1", id: "p1" },
+            { template: "sodas", name: "Soda 1", id: "s1" },
+            { template: "sodas", name: "Soda 2", id: "s2" },
+          ],
+        },
+        "combo-big": {
+          id: "combo-big", name: "ComBig",
+          description: "El nuevo combo grande 🔥 Smashburger doble + hot dog + papas grandes + bebida. Todo lo que necesitás.",
+          price: 21.99, image: "🍔🌭", imageUrl: "", category: "combos", badge: "Nuevo", order: 3,
+          modifierGroups: [
+            { template: "burgerExtras", name: "Extras Burger", id: "eb" },
+            { template: "hotdogSalsas", name: "Salsas Hot Dog", id: "shd" },
+            { template: "salsasPapas", name: "Salsas Papas", id: "sp" },
+            { template: "sodas", name: "Bebida", id: "beb" },
+          ],
+        },
+        "smash-single": {
+          id: "smash-single", name: "Freakie Smashburger",
+          description: "Nuestra clásica Smashburger con carne smash, queso americano, lechuga, tomate y salsas 🍔🔥",
+          price: 5.99, image: "🍔", imageUrl: "", category: "burgers", order: 1,
+          modifierGroups: [{ template: "burgerExtras", name: "Extras", id: "ext" }],
+        },
+        "smash-double": {
+          id: "smash-double", name: "Freakie Smashburger Doble",
+          description: "Doble carne smash, doble queso 🧀🧀 Para los que quieren más.",
+          price: 8.49, image: "🍔🍔", imageUrl: "", category: "burgers", badge: "Popular", order: 2,
+          modifierGroups: [{ template: "burgerExtras", name: "Extras", id: "ext" }],
+        },
+        "hotdog-classic": {
+          id: "hotdog-classic", name: "Freakie Dog Clásico",
+          description: "Hot dog con salchicha premium, salsas a tu gusto 🌭",
+          price: 3.99, image: "🌭", imageUrl: "", category: "hotdogs", order: 1,
+          modifierGroups: [{ template: "hotdogSalsas", name: "Salsas", id: "sal" }],
+        },
+        "hotdog-cheese": {
+          id: "hotdog-cheese", name: "Freakie Dog con Costra de Queso",
+          description: "Hot dog con costra de queso dorado crujiente 🌭🧀✨ El favorito de la casa.",
+          price: 4.99, image: "🌭🧀", imageUrl: "", category: "hotdogs", badge: "Favorito", order: 2,
+          modifierGroups: [
+            { template: "hotdogSalsas", name: "Salsas", id: "sal" },
+            { template: "burgerExtras", name: "Extras", id: "ext" },
+          ],
+        },
+        "papas-reg": {
+          id: "papas-reg", name: "Papas Freakie",
+          description: "Papas fritas crujientes con tus salsas favoritas 🍟",
+          price: 2.99, image: "🍟", imageUrl: "", category: "fries", order: 1,
+          modifierGroups: [{ template: "salsasPapas", name: "Salsas", id: "sal" }],
+        },
+        "papas-loaded": {
+          id: "papas-loaded", name: "Papas Loaded",
+          description: "Papas fritas cargadas con queso cheddar, tocino y jalapeños 🍟🧀🥓",
+          price: 5.49, image: "🍟🔥", imageUrl: "", category: "fries", badge: "Popular", order: 2,
+          modifierGroups: [{ template: "salsasPapas", name: "Salsas extra", id: "sal" }],
+        },
+        "coca-cola": {
+          id: "coca-cola", name: "Coca Cola", description: "Coca Cola bien fría 🥤",
+          price: 1.25, image: "🥤", imageUrl: "", category: "drinks", order: 1, modifierGroups: [],
+        },
+        "fanta": {
+          id: "fanta", name: "Fanta", description: "Fanta naranja 🍊",
+          price: 1.25, image: "🍊", imageUrl: "", category: "drinks", order: 2, modifierGroups: [],
+        },
+        "agua": {
+          id: "agua", name: "Agua", description: "Agua pura 💧",
+          price: 1.00, image: "💧", imageUrl: "", category: "drinks", order: 3, modifierGroups: [],
+        },
+        "sticker": {
+          id: "sticker", name: "Sticker Sorpresa",
+          description: "Un Sticker sorpresa de nuestros más de 15 estilos diferentes 🔥😎",
+          price: 0.50, image: "🎨", imageUrl: "", category: "extras", order: 1, modifierGroups: [],
+        },
+      };
+      await fbSet("menu/products", PRODUCTS_DATA);
+
+      addLog("✅ ¡Migración completada exitosamente!");
+      addLog(`📊 ${Object.keys(PRODUCTS_DATA).length} productos guardados`);
+      addLog(`📂 ${Object.keys(CATEGORIES_DATA).length} categorías guardadas`);
+      setStatus("done");
+    } catch (e) {
+      addLog(`❌ Error: ${e.message}`);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div style={{ ...S.container, maxWidth: 600 }}>
+      <div style={{ textAlign: "center", padding: "30px 0 20px" }}>
+        <div style={{ fontSize: 48 }}>📦</div>
+        <h1 style={{ fontSize: 24, fontWeight: 800, color: "#fff", margin: "8px 0" }}>Migración de Menú</h1>
+        <p style={{ color: "#888", fontSize: 14 }}>Subir productos del data.js a Firebase</p>
+      </div>
+
+      <div style={S.card}>
+        <p style={{ color: "#ccc", fontSize: 14, lineHeight: 1.6 }}>
+          Esta página migra los productos del menú actual a Firebase para que puedan editarse desde el panel admin.
+          <br /><br />
+          <strong style={{ color: "#f59e0b" }}>⚠️ Solo necesitás correr esto UNA vez.</strong>
+        </p>
+
+        {status === "idle" && (
+          <button style={{ ...S.btnPrimary, marginTop: 12 }} onClick={migrate}>
+            🚀 Iniciar migración
+          </button>
+        )}
+
+        {status === "running" && (
+          <button style={{ ...S.btnPrimary, marginTop: 12, opacity: 0.6 }} disabled>
+            ⏳ Migrando...
+          </button>
+        )}
+
+        {status === "done" && (
+          <div style={{ marginTop: 16, padding: 14, background: "#0a2a0a", border: "1px solid #16a34a", borderRadius: 10, textAlign: "center" }}>
+            <p style={{ color: "#4ade80", fontSize: 16, fontWeight: 700, margin: 0 }}>✅ ¡Migración completada!</p>
+            <p style={{ color: "#888", fontSize: 12, margin: "4px 0 0" }}>Ya podés volver al panel admin</p>
+          </div>
+        )}
+
+        {log.length > 0 && (
+          <div style={{ marginTop: 16, padding: 12, background: "#0a0a0a", borderRadius: 8, border: "1px solid #222", maxHeight: 300, overflowY: "auto" }}>
+            {log.map((msg, i) => (
+              <div key={i} style={{ fontSize: 13, color: "#ccc", padding: "3px 0", fontFamily: "monospace" }}>{msg}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ textAlign: "center", marginTop: 16 }}>
+        <a href="/" style={{ color: "#60a5fa", fontSize: 14 }}>← Volver al panel</a>
+      </div>
+    </div>
+  );
 }
 
 // ═══════════════════════════════════════════════
