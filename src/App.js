@@ -29,12 +29,25 @@ async function fbStorageUpload(file, path) {
 // CONSTANTS
 // ═══════════════════════════════════════════════
 const BRANCHES = [
-  { id: "venecia", name: "Venecia", erpId: "f022554d-88b9-4ba5-aba5-8bbd0fb3f3ec", erpName: "Paseo Venecia" },
-  { id: "lourdes", name: "Lourdes", erpId: "e712df8e-344c-4fad-94a9-fa06106d0f71", erpName: "Grand Plaza Lourdes" },
-  { id: "plaza_mundo", name: "Plaza Mundo Soyapango", erpId: "04bcc11a-affa-44b4-9fec-b90d00639cf3", erpName: "Plaza Mundo Soyapango" },
-  { id: "usulutan", name: "Usulután", erpId: "1382bdc6-4349-43af-86e9-1989b9b529de", erpName: "Plaza Mundo Usulután" },
-  { id: "santa_tecla", name: "Santa Tecla", erpId: "8ffb29ec-3d58-4ae1-b0d4-bcd12202456e", erpName: "Plaza Cafetalón" },
+  { id: "venecia", name: "Venecia", erpId: "f022554d-88b9-4ba5-aba5-8bbd0fb3f3ec", erpName: "Paseo Venecia", lat: 13.716623907412574, lng: -89.14466780166137 },
+  { id: "lourdes", name: "Lourdes", erpId: "e712df8e-344c-4fad-94a9-fa06106d0f71", erpName: "Grand Plaza Lourdes", lat: 13.733201107267726, lng: -89.3603926936565 },
+  { id: "plaza_mundo", name: "Plaza Mundo Soyapango", erpId: "04bcc11a-affa-44b4-9fec-b90d00639cf3", erpName: "Plaza Mundo Soyapango", lat: 13.698308350787157, lng: -89.15233743690021 },
+  { id: "usulutan", name: "Usulután", erpId: "1382bdc6-4349-43af-86e9-1989b9b529de", erpName: "Plaza Mundo Usulután", lat: 13.343735833986724, lng: -88.46546425034532 },
+  { id: "santa_tecla", name: "Santa Tecla", erpId: "8ffb29ec-3d58-4ae1-b0d4-bcd12202456e", erpName: "Plaza Cafetalón", lat: 13.676615992236819, lng: -89.28360413762667 },
 ];
+
+// Algoritmo de asignación automática — constantes operativas
+const AUTO_ASSIGN = {
+  RADIO_SUCURSAL_KM: 0.5,          // 500m = "en sucursal"
+  VELOCIDAD_PROMEDIO_KMH: 30,      // para estimar tiempos de ruta
+  MAX_PEDIDOS_POR_DRIVER: 3,
+  UMBRAL_INDIVIDUAL_USD: 70,       // pedidos > $70 van individuales
+  MAX_DIST_AGRUPACION_KM: 2,       // entre clientes consecutivos
+  MAX_DIFF_TIEMPO_AGRUPACION_MIN: 15,
+  MAX_ESPERA_COCINA_MIN: 5,        // no esperar más de 5 min por cocina
+  MAX_TIEMPO_POST_COCINA_MIN: 40,  // cocina → cliente no > 40 min
+  GPS_EXPIRE_MS: 120000,           // GPS de más de 2 min = offline
+};
 
 // Supabase (ERP Freakie Dogs) — para sincronizar pedidos
 const SUPABASE_URL = "https://btboxlwfqcbrdfrlnwln.supabase.co";
@@ -155,6 +168,227 @@ async function seedUsers() {
     drv_usu1: { code: "DRV-USU1", role: "driver", name: "Driver Usulután 1", branch: "usulutan", active: true },
   };
   await fbSet("users", users);
+}
+
+// ═══════════════════════════════════════════════
+// ALGORITMO DE ASIGNACIÓN AUTOMÁTICA DE MOTORISTAS
+// ═══════════════════════════════════════════════
+
+// Haversine: distancia en km entre dos puntos lat/lng
+function haversineKm(lat1, lng1, lat2, lng2) {
+  if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return Infinity;
+  const R = 6371; // km
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Tiempo en minutos para recorrer X km a la velocidad promedio
+function kmToMinutes(km) {
+  return (km / AUTO_ASSIGN.VELOCIDAD_PROMEDIO_KMH) * 60;
+}
+
+// Calcular el estado derivado de un motorista según pedidos activos y GPS
+function calcDriverState(driverId, driver, orders, driversLoc) {
+  const branch = BRANCHES.find((b) => b.id === driver.branch);
+  if (!branch) return { state: "offline", distToSucursal: Infinity };
+
+  const loc = driversLoc[driverId];
+  const gpsAge = loc ? Date.now() - (loc.timestamp || 0) : Infinity;
+  const gpsValid = loc && gpsAge < AUTO_ASSIGN.GPS_EXPIRE_MS;
+
+  // Pedidos activos del motorista (asignados pero no entregados/cancelados)
+  const activeOrders = Object.entries(orders).filter(
+    ([, o]) =>
+      o.driverUserId === driverId &&
+      !["delivered", "cancelled"].includes(o.status)
+  );
+
+  const distToSucursal = gpsValid
+    ? haversineKm(loc.lat, loc.lng, branch.lat, branch.lng)
+    : Infinity;
+
+  // Si no tiene pedidos activos y está en sucursal (radio 500m) → disponible
+  if (activeOrders.length === 0) {
+    if (!gpsValid) return { state: "offline", distToSucursal, activeOrders };
+    if (distToSucursal <= AUTO_ASSIGN.RADIO_SUCURSAL_KM) {
+      return { state: "disponible_en_sucursal", distToSucursal, activeOrders };
+    }
+    // Sin pedidos pero lejos de la sucursal → regresando
+    return { state: "regresando_sucursal", distToSucursal, activeOrders };
+  }
+
+  // Con pedidos activos → en ruta
+  return { state: "en_ruta_entrega", distToSucursal, activeOrders };
+}
+
+// Obtener lat/lng de un pedido (del cliente)
+function getOrderCoords(order) {
+  return {
+    lat: order?.delivery?.coords?.lat ?? null,
+    lng: order?.delivery?.coords?.lng ?? null,
+  };
+}
+
+// ¿Se puede agregar este pedido nuevo a la ruta actual del motorista?
+function puedeAgrupar(driverState, driver, newOrder, orders, driversLoc) {
+  if ((newOrder.total || 0) > AUTO_ASSIGN.UMBRAL_INDIVIDUAL_USD) return false;
+
+  const currentOrders = driverState.activeOrders || [];
+  if (currentOrders.length >= AUTO_ASSIGN.MAX_PEDIDOS_POR_DRIVER) return false;
+
+  const newCoords = getOrderCoords(newOrder);
+  if (newCoords.lat == null) return false;
+
+  // Si alguno de los pedidos actuales está en "on_the_way" (ya recogido) no se puede agregar
+  const alreadyPickedUp = currentOrders.some(([, o]) => o.status === "on_the_way");
+  if (alreadyPickedUp) return false;
+
+  // Distancia entre cliente nuevo y cada cliente de la ruta: todos deben estar ≤ 2 km
+  for (const [, o] of currentOrders) {
+    const c = getOrderCoords(o);
+    if (c.lat == null) return false;
+    const d = haversineKm(c.lat, c.lng, newCoords.lat, newCoords.lng);
+    if (d > AUTO_ASSIGN.MAX_DIST_AGRUPACION_KM) return false;
+  }
+
+  // Ventana temporal: diferencia entre el pedido más temprano y más tardío ≤ 15 min
+  const times = currentOrders.map(([, o]) => o.createdAt || 0).concat([newOrder.createdAt || Date.now()]);
+  const diffMin = (Math.max(...times) - Math.min(...times)) / 60000;
+  if (diffMin > AUTO_ASSIGN.MAX_DIFF_TIEMPO_AGRUPACION_MIN) return false;
+
+  // Si la ruta ya está lista y agregar este pedido obligaría a esperar >5 min por cocina → no
+  const allReady = currentOrders.every(([, o]) => o.status === "ready");
+  if (allReady) {
+    // Tiempo estimado para que el nuevo pedido esté listo
+    const prepMin = newOrder.prepMinutes || 0;
+    if (prepMin > AUTO_ASSIGN.MAX_ESPERA_COCINA_MIN) return false;
+  }
+
+  // Validar tiempo máximo post-cocina (40 min)
+  // Estimación simple: tiempo hasta salir + tiempo de ruta hasta el último cliente
+  const branch = BRANCHES.find((b) => b.id === driver.branch);
+  if (branch) {
+    const allCoords = [...currentOrders.map(([, o]) => getOrderCoords(o)), newCoords];
+    // Ruta: sucursal → cliente1 → cliente2 → ... → último
+    let totalKm = 0;
+    let prev = { lat: branch.lat, lng: branch.lng };
+    for (const c of allCoords) {
+      if (c.lat == null) continue;
+      totalKm += haversineKm(prev.lat, prev.lng, c.lat, c.lng);
+      prev = c;
+    }
+    const routeMinutes = kmToMinutes(totalKm);
+    if (routeMinutes > AUTO_ASSIGN.MAX_TIEMPO_POST_COCINA_MIN) return false;
+  }
+
+  return true;
+}
+
+// Tiempo estimado de regreso a sucursal (en minutos)
+function tiempoRegresoEstimado(driverState, driver, orders, driversLoc) {
+  const loc = driversLoc[driver.id || driver._id];
+  const branch = BRANCHES.find((b) => b.id === driver.branch);
+  if (!branch) return Infinity;
+
+  const activeOrders = driverState.activeOrders || [];
+  if (activeOrders.length === 0) {
+    // Sin pedidos activos → distancia directa de su GPS a sucursal
+    if (!loc) return Infinity;
+    return kmToMinutes(haversineKm(loc.lat, loc.lng, branch.lat, branch.lng));
+  }
+
+  // Con pedidos: tiempo estimado hasta entregar todos + regresar a sucursal
+  const startLat = loc?.lat ?? branch.lat;
+  const startLng = loc?.lng ?? branch.lng;
+  let totalKm = 0;
+  let prev = { lat: startLat, lng: startLng };
+  for (const [, o] of activeOrders) {
+    const c = getOrderCoords(o);
+    if (c.lat == null) continue;
+    totalKm += haversineKm(prev.lat, prev.lng, c.lat, c.lng);
+    prev = c;
+  }
+  // Regreso a sucursal
+  totalKm += haversineKm(prev.lat, prev.lng, branch.lat, branch.lng);
+  return kmToMinutes(totalKm);
+}
+
+// Función principal de asignación automática
+// Devuelve: { driverId, reason } o null si no se pudo asignar
+function asignarPedidoAutomatico(orderId, orders, users, driversLoc) {
+  const order = orders[orderId];
+  if (!order || !order.branch) return null;
+
+  // Motoristas activos de esta sucursal
+  const branchDrivers = Object.entries(users)
+    .filter(([, u]) => u.role === "driver" && u.branch === order.branch && u.active)
+    .map(([id, u]) => ({ id, ...u, _state: calcDriverState(id, u, orders, driversLoc) }));
+
+  const libresEnSucursal = branchDrivers.filter(
+    (d) => d._state.state === "disponible_en_sucursal"
+  );
+
+  // REGLA 1: Pedido > $70 → individual obligatorio
+  if ((order.total || 0) > AUTO_ASSIGN.UMBRAL_INDIVIDUAL_USD) {
+    if (libresEnSucursal.length > 0) {
+      // El más cercano a la sucursal (por si acaso)
+      libresEnSucursal.sort((a, b) => a._state.distToSucursal - b._state.distToSucursal);
+      return { driverId: libresEnSucursal[0].id, reason: "individual_grande_libre" };
+    }
+    // Si no hay libre, esperar al que regresa antes
+    const regresando = branchDrivers.filter((d) => d._state.state === "regresando_sucursal");
+    if (regresando.length > 0) {
+      regresando.sort(
+        (a, b) =>
+          tiempoRegresoEstimado(a._state, a, orders, driversLoc) -
+          tiempoRegresoEstimado(b._state, b, orders, driversLoc)
+      );
+      return { driverId: regresando[0].id, reason: "individual_grande_reservado" };
+    }
+    return null;
+  }
+
+  // REGLA 2: Motorista libre en sucursal → asignación individual directa
+  if (libresEnSucursal.length > 0) {
+    libresEnSucursal.sort((a, b) => a._state.distToSucursal - b._state.distToSucursal);
+    return { driverId: libresEnSucursal[0].id, reason: "libre_en_sucursal" };
+  }
+
+  // REGLA 3: Evaluar agrupación
+  const candidatosAgrupacion = branchDrivers.filter((d) =>
+    puedeAgrupar(d._state, d, order, orders, driversLoc)
+  );
+
+  if (candidatosAgrupacion.length > 0) {
+    // Elegir el que tiene menos pedidos actuales (para repartir mejor)
+    candidatosAgrupacion.sort((a, b) => {
+      const aCount = a._state.activeOrders.length;
+      const bCount = b._state.activeOrders.length;
+      if (aCount !== bCount) return aCount - bCount;
+      return a._state.distToSucursal - b._state.distToSucursal;
+    });
+    return { driverId: candidatosAgrupacion[0].id, reason: "agrupacion" };
+  }
+
+  // REGLA 4: Reservar al motorista que regresa en menor tiempo
+  const regresando = branchDrivers.filter(
+    (d) => d._state.state === "regresando_sucursal" || d._state.state === "en_ruta_entrega"
+  );
+  if (regresando.length > 0) {
+    regresando.sort(
+      (a, b) =>
+        tiempoRegresoEstimado(a._state, a, orders, driversLoc) -
+        tiempoRegresoEstimado(b._state, b, orders, driversLoc)
+    );
+    // Solo reservar si no excede el límite de 3 pedidos
+    const best = regresando.find((d) => d._state.activeOrders.length < AUTO_ASSIGN.MAX_PEDIDOS_POR_DRIVER);
+    if (best) return { driverId: best.id, reason: "reservado" };
+  }
+
+  return null;
 }
 
 // ═══════════════════════════════════════════════
@@ -653,11 +887,42 @@ function EncargadoDash({ user, onLogout }) {
               </div>
               <button
                 style={{ ...S.btnAction, opacity: prepTime ? 1 : 0.4, pointerEvents: prepTime ? "auto" : "none" }}
-                onClick={() => {
+                onClick={async () => {
                   const extra = { prepMinutes: prepTime, prepStartedAt: Date.now() };
-                  setStatus(oid, "preparing", extra);
+                  await setStatus(oid, "preparing", extra);
                   setSel([oid, { ...o, status: "preparing", ...extra }]);
                   setPrepTime(null);
+
+                  // AUTO-ASIGNACIÓN: ejecutar algoritmo después de aceptar
+                  try {
+                    const [latestOrders, latestUsers, latestDriversLoc] = await Promise.all([
+                      fbGet("orders"), fbGet("users"), fbGet("drivers_location"),
+                    ]);
+                    // Usar el pedido actualizado con prepMinutes
+                    const updatedOrders = { ...latestOrders, [oid]: { ...latestOrders[oid], ...extra } };
+                    const result = asignarPedidoAutomatico(oid, updatedOrders, latestUsers || {}, latestDriversLoc || {});
+                    if (result && result.driverId) {
+                      const driver = (latestUsers || {})[result.driverId];
+                      await fbUpdate(`orders/${oid}`, {
+                        driverId: result.driverId,
+                        driverUserId: result.driverId,
+                        driverName: driver?.name || "",
+                        autoAssigned: true,
+                        autoAssignReason: result.reason,
+                        autoAssignedAt: Date.now(),
+                      });
+                      // Sincronizar motorista al ERP
+                      const fullOrder = latestOrders[oid];
+                      if (fullOrder?.orderId && driver?.name) {
+                        supabaseUpdateOrder(fullOrder.orderId, { repartidor_nombre: driver.name });
+                      }
+                    } else {
+                      // No se pudo asignar automáticamente
+                      await fbUpdate(`orders/${oid}`, { autoAssignPending: true });
+                    }
+                  } catch (e) {
+                    console.error("Error en auto-asignación:", e);
+                  }
                 }}
               >👨‍🍳 Aceptar pedido ({prepTime ? `${prepTime} min` : "seleccioná tiempo"})</button>
             </div>
@@ -788,8 +1053,15 @@ function AsignadorDash({ user, onLogout }) {
         myOrders.map(([id, o]) => {
           const st = getStatus(o.status);
           return (
-            <div key={id} style={S.orderCard} onClick={() => { setSel([id, o]); setView("detail"); }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontWeight: 800, fontFamily: "monospace", color: "#fff", fontSize: 14 }}>{o.orderId}</span><span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span></div>
+            <div key={id} style={{ ...S.orderCard, borderColor: o.autoAssignPending ? "#ef4444" : "#222", borderWidth: o.autoAssignPending ? 2 : 1 }} onClick={() => { setSel([id, o]); setView("detail"); }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontWeight: 800, fontFamily: "monospace", color: "#fff", fontSize: 14 }}>{o.orderId}</span>
+                  {o.autoAssigned && <span style={{ fontSize: 10, background: "#0a2a0a", color: "#4ade80", padding: "2px 6px", borderRadius: 4, fontWeight: 700, border: "1px solid #166534" }}>🤖 Auto</span>}
+                  {o.autoAssignPending && !o.driverName && <span style={{ fontSize: 10, background: "#2a0a0a", color: "#f87171", padding: "2px 6px", borderRadius: 4, fontWeight: 700, border: "1px solid #991b1b" }}>⚠️ Manual</span>}
+                </div>
+                <span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span>
+              </div>
               <div style={{ fontSize: 13, color: "#ccc", marginBottom: 3 }}>👤 {o.customer?.name} · 📍 {o.delivery?.address}</div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ fontWeight: 700, color: "#f97316" }}>${o.total?.toFixed(2)}</span>
@@ -806,9 +1078,6 @@ function AsignadorDash({ user, onLogout }) {
   );
 }
 
-// ═══════════════════════════════════════════════
-// DRIVER DASHBOARD
-// ═══════════════════════════════════════════════
 // ═══════════════════════════════════════════════
 // MENU EDITOR DASHBOARD
 // ═══════════════════════════════════════════════
@@ -1514,11 +1783,40 @@ function DriverDash({ user, onLogout }) {
   const [orders, setOrders] = useState({});
   const [activeDelivery, setActiveDelivery] = useState(null);
   const gpsRef = useRef(null);
+  const alwaysGpsRef = useRef(null);
   const poll = useRef(null);
 
   const load = useCallback(async () => { setOrders((await fbGet("orders")) || {}); }, []);
   useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
-  useEffect(() => { return () => { if (gpsRef.current) navigator.geolocation.clearWatch(gpsRef.current); }; }, []);
+  useEffect(() => {
+    return () => {
+      if (gpsRef.current) navigator.geolocation.clearWatch(gpsRef.current);
+      if (alwaysGpsRef.current) navigator.geolocation.clearWatch(alwaysGpsRef.current);
+    };
+  }, []);
+
+  // Always-on GPS: share location while logged in so el algoritmo sepa si está en sucursal
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    alwaysGpsRef.current = navigator.geolocation.watchPosition(
+      (p) => {
+        const loc = {
+          lat: p.coords.latitude,
+          lng: p.coords.longitude,
+          timestamp: Date.now(),
+          accuracy: p.coords.accuracy,
+          name: user.name,
+          branch: user.branch,
+        };
+        fbSet(`drivers_location/${user.id}`, loc);
+      },
+      (err) => console.error("GPS siempre:", err),
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+    );
+    return () => {
+      if (alwaysGpsRef.current) navigator.geolocation.clearWatch(alwaysGpsRef.current);
+    };
+  }, [user.id, user.name, user.branch]);
 
   const myOrders = Object.entries(orders)
     .filter(([, o]) => o.driverUserId === user.id && !["delivered", "cancelled"].includes(o.status))
@@ -1584,7 +1882,13 @@ function DriverDash({ user, onLogout }) {
           const isActive = activeDelivery === id;
           return (
             <div key={id} style={{ ...S.orderCard, borderColor: isActive ? "#8b5cf6" : "#222", borderWidth: isActive ? 2 : 1 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontWeight: 800, fontFamily: "monospace", color: "#fff" }}>{o.orderId}</span><span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontWeight: 800, fontFamily: "monospace", color: "#fff" }}>{o.orderId}</span>
+                  {o.autoAssigned && <span style={{ fontSize: 10, background: "#0a2a0a", color: "#4ade80", padding: "2px 6px", borderRadius: 4, fontWeight: 700, border: "1px solid #166534" }}>🤖 Auto</span>}
+                </div>
+                <span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span>
+              </div>
               <div style={{ fontSize: 14, color: "#ccc", marginBottom: 4 }}>👤 {o.customer?.name} · 📱 {o.customer?.phone}</div>
               {o.delivery?.type === "delivery" && (
                 <div style={{ background: "#1a1a1a", borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 13 }}>
