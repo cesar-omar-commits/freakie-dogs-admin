@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 
 // ═══════════════════════════════════════════════
 // FIREBASE
@@ -41,7 +41,7 @@ const AUTO_ASSIGN = {
   RADIO_SUCURSAL_KM: 0.5,          // 500m = "en sucursal"
   VELOCIDAD_PROMEDIO_KMH: 30,      // para estimar tiempos de ruta
   MAX_PEDIDOS_POR_DRIVER: 3,
-  UMBRAL_INDIVIDUAL_USD: 70,       // pedidos > $70 van individuales
+  UMBRAL_INDIVIDUAL_USD: 100,      // pedidos > $100 van individuales
   MAX_DIST_AGRUPACION_KM: 2,       // entre clientes consecutivos
   MAX_DIFF_TIEMPO_AGRUPACION_MIN: 15,
   MAX_ESPERA_COCINA_MIN: 5,        // no esperar más de 5 min por cocina
@@ -1948,6 +1948,17 @@ function TrackingView({ orderId }) {
     if (o) setOrder(o); if (t) setLoc(t); setLoading(false);
   }, [orderId]);
 
+  // Load Google Fonts for tracking page
+  useEffect(() => {
+    if (!document.getElementById("fd-fonts")) {
+      const link = document.createElement("link");
+      link.id = "fd-fonts";
+      link.rel = "stylesheet";
+      link.href = "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap";
+      document.head.appendChild(link);
+    }
+  }, []);
+
   useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
 
   useEffect(() => {
@@ -1965,62 +1976,184 @@ function TrackingView({ orderId }) {
     const map = window.L.map("tmap", { zoomControl: false }).setView([loc.lat, loc.lng], 16);
     window.L.control.zoom({ position: "bottomright" }).addTo(map);
     window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "© CARTO" }).addTo(map);
-    const driverSvg = `<div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#f97316;border-radius:50%;box-shadow:0 3px 12px rgba(249,115,22,0.5)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 2l-4 9h8l-1 4"/><path d="M16 11l3 7"/><path d="M8 11L5 18"/></svg></div>`;
+    const driverSvg = `<div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#D42B28;border-radius:50%;box-shadow:0 3px 12px rgba(212,43,43,0.5);border:2px solid #fff"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 2l-4 9h8l-1 4"/><path d="M16 11l3 7"/><path d="M8 11L5 18"/></svg></div>`;
     const icon = window.L.divIcon({ html: driverSvg, iconSize: [40, 40], iconAnchor: [20, 20], className: "" });
     markerRef.current = window.L.marker([loc.lat, loc.lng], { icon }).addTo(map);
     if (order?.delivery?.coords) {
-      const destSvg = `<div style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;background:#10b981;border-radius:50%;box-shadow:0 3px 12px rgba(16,185,129,0.5)"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5 14.5 7.62 14.5 9 13.38 11.5 12 11.5z"/></svg></div>`;
+      const destSvg = `<div style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;background:#D42B28;border-radius:50%;box-shadow:0 3px 12px rgba(212,43,43,0.4)"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5 14.5 7.62 14.5 9 13.38 11.5 12 11.5z"/></svg></div>`;
       const di = window.L.divIcon({ html: destSvg, iconSize: [36, 36], iconAnchor: [18, 18], className: "" });
       window.L.marker([order.delivery.coords.lat, order.delivery.coords.lng], { icon: di }).addTo(map);
     }
     mapRef.current = map; setTimeout(() => map.invalidateSize(), 200);
   };
 
-  if (loading) return <div style={S.center}><p style={{ color: "#888" }}>Cargando...</p></div>;
-  if (!order) return <div style={S.center}><p style={{ fontSize: 48 }}>❌</p><p style={{ color: "#888" }}>Pedido no encontrado</p></div>;
+  // Design System v2.0 styles
+  const T = {
+    page: { maxWidth: 500, margin: "0 auto", minHeight: "100vh", background: "#0E0E0D", fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif", padding: "0 0 40px" },
+    header: { textAlign: "center", padding: "24px 20px 16px" },
+    logo: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 44, height: 44, background: "#D42B28", borderRadius: 10, marginBottom: 8 },
+    logoText: { fontFamily: "'Cooper Black', serif", fontSize: 18, color: "#F5C518", textShadow: "2px 2px 0 rgba(0,0,0,0.8)", margin: "4px 0" },
+    subtitle: { fontSize: 12, color: "#9A9A9A", margin: 0 },
+    orderId: { fontFamily: "'Plus Jakarta Sans', monospace", fontSize: 14, fontWeight: 700, color: "#D42B28", background: "rgba(212,43,43,0.15)", border: "1px solid rgba(212,43,43,0.4)", padding: "6px 14px", borderRadius: 8, letterSpacing: 1 },
+    card: { background: "#1A1A1A", borderRadius: 12, padding: 16, margin: "0 16px 12px", border: "1px solid #2E2E26" },
+    secTitle: { fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 10, textTransform: "uppercase", letterSpacing: 1.5 },
+    row: { display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: "#9A9A9A" },
+    footer: { textAlign: "center", padding: "24px 0", fontSize: 11, color: "#555555", fontFamily: "'Cooper Black', serif" },
+  };
 
-  const st = getStatus(order.status);
-  const steps = ["received", "preparing", "on_the_way", "delivered"];
-  const cur = Math.max(0, steps.indexOf(order.status === "assigned" ? "received" : order.status === "ready" ? "preparing" : order.status));
+  // Status copy from Design System v2.0
+  const statusCopy = {
+    new: { icon: "🌶️", label: "Nuevo", copy: "Recibimos tu pedido 🌭", color: "#D42B28" },
+    assigned: { icon: "🌶️", label: "Recibido", copy: "Recibimos tu pedido 🌭", color: "#D42B28" },
+    preparing: { icon: "🍳", label: "Preparando", copy: "Preparando tu locura con todo el amor 🌶️", color: "#D42B28" },
+    ready: { icon: "✨", label: "Listo", copy: "¡Tu pedido está listo! 🔥", color: "#F5C518" },
+    on_the_way: { icon: "🚀", label: "En camino", copy: "Va volando hacia vos, aguantá poco 🚀", color: "#D42B28" },
+    delivered: { icon: "✅", label: "Entregado", copy: "¡Buen provecho! 🌭🔥", color: "#4CAF50" },
+    cancelled: { icon: "❌", label: "Cancelado", copy: "Pedido cancelado", color: "#ef4444" },
+  };
+
+  if (loading) return <div style={{ ...T.page, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ textAlign: "center" }}><div style={{ fontSize: 40 }}>🌭</div><p style={{ color: "#9A9A9A", marginTop: 8 }}>Cargando...</p></div></div>;
+  if (!order) return <div style={{ ...T.page, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ textAlign: "center" }}><div style={{ fontSize: 48 }}>❌</div><p style={{ color: "#9A9A9A", marginTop: 8 }}>Pedido no encontrado</p></div></div>;
+
+  const sc = statusCopy[order.status] || statusCopy.new;
+  const steps = [
+    { id: "received", icon: "🌶️", label: "Nuevo" },
+    { id: "preparing", icon: "🍳", label: "Preparando" },
+    { id: "on_the_way", icon: "🚀", label: "En camino" },
+    { id: "delivered", icon: "✅", label: "Entregado" },
+  ];
+  const stepIds = ["received", "preparing", "on_the_way", "delivered"];
+  const cur = Math.max(0, stepIds.indexOf(order.status === "assigned" ? "received" : order.status === "ready" ? "preparing" : order.status));
 
   return (
-    <div style={{ ...S.container, maxWidth: 500 }}>
-      <div style={{ textAlign: "center", padding: "20px 0 10px" }}><div style={{ fontSize: 32 }}>🌭</div><h1 style={{ fontSize: 20, fontWeight: 800, color: "#fff", margin: "4px 0" }}>Freakie Dogs</h1><p style={{ fontSize: 13, color: "#888", margin: 0 }}>Seguimiento de pedido</p></div>
-      <div style={{ textAlign: "center", marginBottom: 16 }}><span style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800, color: "#f97316" }}>{order.orderId}</span></div>
-      <div style={{ display: "flex", justifyContent: "center", gap: 4, marginBottom: 20, padding: "0 16px" }}>
-        {steps.map((step, i) => { const s = getStatus(step); const a = i <= cur; const c = i === cur; return (
-          <div key={step} style={{ flex: 1, textAlign: "center" }}><div style={{ height: 6, borderRadius: 3, background: a ? s.color : "#333", marginBottom: 6 }} /><div style={{ fontSize: 18, opacity: a ? 1 : 0.3 }}>{s.icon}</div><div style={{ fontSize: 10, color: c ? s.color : "#666", fontWeight: c ? 700 : 400 }}>{s.label}</div></div>
-        ); })}
+    <div style={T.page}>
+      {/* Header */}
+      <div style={T.header}>
+        <div style={T.logo}><span style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>FD</span></div>
+        <h1 style={T.logoText}>Freakie Dogs</h1>
+        <p style={T.subtitle}>Seguimiento de pedido</p>
       </div>
-      <div style={{ textAlign: "center", marginBottom: 20 }}><span style={{ ...S.badge, background: st.color, fontSize: 14, padding: "6px 16px" }}>{st.icon} {st.label}</span></div>
+
+      {/* Order ID */}
+      <div style={{ textAlign: "center", marginBottom: 20 }}>
+        <span style={T.orderId}>{order.orderId}</span>
+      </div>
+
+      {/* Progress bar — Design System tracking bar with brand icons */}
+      <div style={{ display: "flex", alignItems: "center", padding: "0 20px", marginBottom: 8 }}>
+        {steps.map((step, i) => {
+          const active = i <= cur;
+          const isCurrent = i === cur;
+          return (
+            <React.Fragment key={step.id}>
+              {i > 0 && (
+                <div style={{ flex: 1, height: 2, background: active ? "#D42B28" : "#2E2E26", transition: "background 0.3s" }} />
+              )}
+              <div style={{
+                width: isCurrent ? 44 : 36, height: isCurrent ? 44 : 36,
+                borderRadius: "50%",
+                background: active ? "#D42B28" : "#1A1A1A",
+                border: active ? "2px solid #D42B28" : "2px solid #2E2E26",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: isCurrent ? 20 : 16,
+                boxShadow: isCurrent ? "0 0 16px rgba(212,43,43,0.4)" : "none",
+                transition: "all 0.3s",
+                flexShrink: 0,
+              }}>
+                {step.icon}
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", padding: "0 20px", marginBottom: 20 }}>
+        {steps.map((step, i) => (
+          <div key={step.id} style={{ flex: 1, textAlign: "center", fontSize: 9, color: i <= cur ? "#D42B28" : "#555", fontWeight: i === cur ? 700 : 400, letterSpacing: 0.5, textTransform: "uppercase" }}>
+            {step.label}
+          </div>
+        ))}
+      </div>
+
+      {/* Status message — Design System copy */}
+      <div style={{ textAlign: "center", marginBottom: 20, padding: "0 20px" }}>
+        <p style={{ fontSize: 15, fontWeight: 700, color: "#fff", margin: "0 0 4px" }}>{sc.copy}</p>
+      </div>
+
+      {/* Countdown Timer — when preparing */}
       {(order.status === "preparing" || order.status === "assigned") && order.prepStartedAt && order.prepMinutes && (
         <CountdownTimer prepStartedAt={order.prepStartedAt} prepMinutes={order.prepMinutes} />
       )}
       {(order.status === "preparing" || order.status === "assigned") && !order.prepStartedAt && (
-        <div style={{ textAlign: "center", padding: 20, background: "#111", borderRadius: 12, marginBottom: 16 }}>
+        <div style={{ ...T.card, textAlign: "center" }}>
           <p style={{ fontSize: 30 }}>👨‍🍳</p>
-          <p style={{ color: "#888", fontSize: 14 }}>Tu pedido está siendo procesado</p>
+          <p style={{ color: "#9A9A9A", fontSize: 14 }}>Tu pedido está siendo procesado</p>
         </div>
       )}
+
+      {/* Ready state */}
       {order.status === "ready" && (
-        <div style={{ textAlign: "center", padding: 20, background: "#0a0a2e", borderRadius: 12, marginBottom: 16, border: "1px solid #2a2a4e" }}>
+        <div style={{ ...T.card, textAlign: "center", border: "1px solid rgba(245,197,24,0.3)", background: "rgba(245,197,24,0.05)" }}>
           <p style={{ fontSize: 36 }}>✨</p>
-          <p style={{ color: "#a78bfa", fontSize: 16, fontWeight: 700 }}>¡Tu pedido está listo!</p>
-          <p style={{ color: "#888", fontSize: 13 }}>Esperando motorista para la entrega</p>
+          <p style={{ color: "#F5C518", fontSize: 16, fontWeight: 700 }}>¡Tu pedido está listo!</p>
+          <p style={{ color: "#9A9A9A", fontSize: 13 }}>Esperando motorista para la entrega</p>
         </div>
       )}
-      {order.status === "on_the_way" && loc && (<><div id="tmap" style={{ width: "100%", height: 300, borderRadius: 12, border: "1px solid #333", marginBottom: 8 }} /><p style={{ textAlign: "center", fontSize: 12, color: "#666" }}>🏍️ Tu motorista viene en camino</p></>)}
-      {order.status === "on_the_way" && !loc && <div style={{ textAlign: "center", padding: 20, background: "#111", borderRadius: 12, marginBottom: 16 }}><p style={{ fontSize: 30 }}>🏍️</p><p style={{ color: "#888", fontSize: 14 }}>Esperando GPS del motorista...</p></div>}
-      {order.status === "delivered" && <div style={{ textAlign: "center", padding: 20, background: "#0a1a0a", borderRadius: 12, marginBottom: 16, border: "1px solid #1a3a1a" }}><p style={{ fontSize: 40 }}>🎉</p><p style={{ color: "#4ade80", fontSize: 16, fontWeight: 700 }}>¡Pedido entregado!</p></div>}
+
+      {/* Map — when on the way */}
+      {order.status === "on_the_way" && loc && (
+        <div style={{ margin: "0 16px 12px" }}>
+          <div id="tmap" style={{ width: "100%", height: 300, borderRadius: 12, border: "1px solid #2E2E26" }} />
+          <p style={{ textAlign: "center", fontSize: 12, color: "#9A9A9A", marginTop: 8 }}>🏍️ Tu motorista viene en camino</p>
+        </div>
+      )}
+      {order.status === "on_the_way" && !loc && (
+        <div style={{ ...T.card, textAlign: "center" }}>
+          <p style={{ fontSize: 30 }}>🏍️</p>
+          <p style={{ color: "#9A9A9A", fontSize: 14 }}>Esperando GPS del motorista...</p>
+        </div>
+      )}
+
+      {/* Delivered */}
+      {order.status === "delivered" && (
+        <div style={{ ...T.card, textAlign: "center", border: "1px solid rgba(76,175,80,0.3)", background: "rgba(76,175,80,0.05)" }}>
+          <p style={{ fontSize: 40 }}>🎉</p>
+          <p style={{ color: "#4CAF50", fontSize: 16, fontWeight: 700 }}>¡Pedido entregado!</p>
+          <p style={{ color: "#9A9A9A", fontSize: 13 }}>¡Buen provecho! 🌭🔥</p>
+        </div>
+      )}
 
       {/* Mini game while waiting */}
       {!["delivered", "cancelled"].includes(order.status) && (
-        <FreakieRunner />
+        <div style={{ margin: "0 16px 12px", background: "#1A1A1A", borderRadius: 12, padding: "12px 0", border: "1px solid rgba(245,197,24,0.2)" }}>
+          <p style={{ fontFamily: "'Cooper Black', serif", fontSize: 14, color: "#F5C518", textShadow: "1px 1px 0 rgba(0,0,0,0.8)", textAlign: "center", marginBottom: 8 }}>🎮 Jugá mientras esperás</p>
+          <FreakieRunner />
+        </div>
       )}
 
-      <div style={{ ...S.card }}><h3 style={S.secTitle}>📋 Tu pedido</h3>{(order.items || []).map((it, i) => <div key={i} style={S.row}><span>{it.qty}x {it.name}</span><span style={{ fontWeight: 700 }}>${(it.price * it.qty).toFixed(2)}</span></div>)}<div style={{ ...S.row, borderTop: "1px solid #333", marginTop: 8, paddingTop: 8 }}><span style={{ fontWeight: 800 }}>Total</span><span style={{ fontWeight: 800, color: "#f97316" }}>${order.total?.toFixed(2)}</span></div></div>
-      {order.driverName && <div style={S.card}><h3 style={S.secTitle}>🏍️ Tu motorista</h3><p style={{ color: "#fff", fontSize: 15, margin: "2px 0", fontWeight: 600 }}>{order.driverName}</p></div>}
-      <div style={S.footer}>Freakie Dogs © 2026 🌭🔥</div>
+      {/* Order summary */}
+      <div style={T.card}>
+        <h3 style={T.secTitle}>📋 Tu pedido</h3>
+        {(order.items || []).map((it, i) => (
+          <div key={i} style={T.row}>
+            <span style={{ color: "#fff" }}>{it.qty}x {it.name}</span>
+            <span style={{ fontWeight: 700, color: "#D42B28" }}>${(it.price * it.qty).toFixed(2)}</span>
+          </div>
+        ))}
+        <div style={{ ...T.row, borderTop: "1px solid #2E2E26", marginTop: 8, paddingTop: 8 }}>
+          <span style={{ fontWeight: 800, color: "#fff" }}>Total</span>
+          <span style={{ fontWeight: 800, color: "#D42B28" }}>${order.total?.toFixed(2)}</span>
+        </div>
+      </div>
+
+      {/* Driver info */}
+      {order.driverName && (
+        <div style={T.card}>
+          <h3 style={T.secTitle}>🏍️ Tu motorista</h3>
+          <p style={{ color: "#fff", fontSize: 15, margin: "2px 0", fontWeight: 600 }}>{order.driverName}</p>
+        </div>
+      )}
+
+      <div style={T.footer}>Freakie Dogs © 2026 🌭🔥</div>
     </div>
   );
 }
@@ -2280,11 +2413,7 @@ function FreakieRunner() {
   useEffect(() => { return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }; }, []);
 
   return (
-    <div style={{ background: "#111", borderRadius: 12, border: "1px solid #222", marginBottom: 16, overflow: "hidden" }}>
-      <div style={{ padding: "10px 14px 4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>🎮 Jugá mientras esperás</span>
-        {highScore > 0 && <span style={{ fontSize: 11, color: "#f59e0b", fontFamily: "monospace" }}>🏆 {highScore}</span>}
-      </div>
+    <div style={{ overflow: "hidden" }}>
       <div style={{ position: "relative", cursor: "pointer" }} onClick={jump} onTouchStart={(e) => { e.preventDefault(); jump(); }}>
         <canvas ref={canvasRef} width={W} height={H} style={{ display: "block", width: "100%", height: "auto", touchAction: "none" }} />
         {!started && (
