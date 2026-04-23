@@ -322,9 +322,9 @@ function asignarPedidoAutomatico(orderId, orders, users, driversLoc) {
   const order = orders[orderId];
   if (!order || !order.branch) return null;
 
-  // Motoristas activos de esta sucursal
+  // Motoristas activos de esta sucursal (solo los que están en estado "activo")
   const branchDrivers = Object.entries(users)
-    .filter(([, u]) => u.role === "driver" && u.branch === order.branch && u.active)
+    .filter(([, u]) => u.role === "driver" && u.branch === order.branch && u.active && (u.driverStatus || "activo") === "activo")
     .map(([id, u]) => ({ id, ...u, _state: calcDriverState(id, u, orders, driversLoc) }));
 
   const libresEnSucursal = branchDrivers.filter(
@@ -707,7 +707,8 @@ function MainApp() {
   const logout = () => { setUser(null); setCode(""); };
   if (user.role === "admin") return <AdminDash user={user} onLogout={logout} />;
   if (user.role === "encargado") return <EncargadoDash user={user} onLogout={logout} />;
-  if (user.role === "asignador") return <AsignadorDash user={user} onLogout={logout} />;
+  // Asignador role removed — encargado now handles manual assignment
+  // if (user.role === "asignador") return <AsignadorDash user={user} onLogout={logout} />;
   if (user.role === "driver") return <DriverDash user={user} onLogout={logout} />;
   if (user.role === "menu_editor") return <MenuEditorDash user={user} onLogout={logout} />;
   if (user.role === "stats") return <StatsDash user={user} onLogout={logout} />;
@@ -835,17 +836,48 @@ function AdminDash({ user, onLogout }) {
 // ═══════════════════════════════════════════════
 function EncargadoDash({ user, onLogout }) {
   const [orders, setOrders] = useState({});
+  const [users, setUsers] = useState({});
+  const [driversLoc, setDriversLoc] = useState({});
   const [view, setView] = useState("list");
   const [sel, setSel] = useState(null);
   const [filter, setFilter] = useState("assigned");
   const poll = useRef(null);
 
-  const load = useCallback(async () => { setOrders((await fbGet("orders")) || {}); }, []);
+  const load = useCallback(async () => {
+    const [o, u, dl] = await Promise.all([fbGet("orders"), fbGet("users"), fbGet("drivers_location")]);
+    setOrders(o || {}); setUsers(u || {}); setDriversLoc(dl || {});
+  }, []);
   useEffect(() => { load(); poll.current = setInterval(load, 2000); return () => clearInterval(poll.current); }, [load]);
 
   const my = Object.entries(orders).filter(([, o]) => o.branch === user.branch).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
   const flt = filter === "all" ? my : my.filter(([, o]) => o.status === filter);
   const cnt = { assigned: my.filter(([, o]) => o.status === "assigned").length, preparing: my.filter(([, o]) => o.status === "preparing").length, ready: my.filter(([, o]) => o.status === "ready").length };
+
+  // Pedidos que necesitan asignación manual (algoritmo falló)
+  const pendingManual = my.filter(([, o]) => o.autoAssignPending && !o.driverName && !["delivered", "cancelled"].includes(o.status));
+
+  // Drivers de mi sucursal
+  const myDrivers = Object.entries(users).filter(([, u]) => u.role === "driver" && u.branch === user.branch);
+
+  // Asignar driver manualmente
+  const assignDriverManual = async (oid, driverId) => {
+    const driver = users[driverId];
+    const order = orders[oid];
+    await fbUpdate(`orders/${oid}`, {
+      driverId: driverId || null,
+      driverUserId: driverId || null,
+      driverName: driver?.name || "",
+      autoAssignPending: null,
+      manuallyAssigned: true,
+      manualAssignedBy: user.name,
+      manualAssignedAt: Date.now(),
+    });
+    // Sync to Supabase ERP
+    if (order?.orderId && driver?.name) {
+      supabaseUpdateOrder(order.orderId, { repartidor_nombre: driver.name });
+    }
+    load();
+  };
 
   const setStatus = async (oid, s, extra = {}) => {
     setOrders(prev => ({ ...prev, [oid]: { ...prev[oid], status: s, ...extra } }));
@@ -947,16 +979,59 @@ function EncargadoDash({ user, onLogout }) {
         flt.map(([id, o]) => {
           const st = getStatus(o.status);
           return (
-            <div key={id} style={S.orderCard} onClick={() => { setSel([id, o]); setView("detail"); }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontWeight: 800, fontFamily: "monospace", color: "#fff", fontSize: 14 }}>{o.orderId}</span><span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span></div>
+            <div key={id} style={{ ...S.orderCard, borderColor: o.autoAssignPending && !o.driverName ? "#ef4444" : "#222", borderWidth: o.autoAssignPending && !o.driverName ? 2 : 1 }} onClick={() => { setSel([id, o]); setView("detail"); }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontWeight: 800, fontFamily: "monospace", color: "#fff", fontSize: 14 }}>{o.orderId}</span>
+                  {o.autoAssigned && <span style={{ fontSize: 9, background: "#0a2a0a", color: "#4ade80", padding: "2px 6px", borderRadius: 4, fontWeight: 700, border: "1px solid #166534" }}>🤖</span>}
+                  {o.autoAssignPending && !o.driverName && <span style={{ fontSize: 9, background: "#2a0a0a", color: "#f87171", padding: "2px 6px", borderRadius: 4, fontWeight: 700, border: "1px solid #991b1b" }}>⚠️ Asignar</span>}
+                </div>
+                <span style={{ ...S.badge, background: st.color }}>{st.icon} {st.label}</span>
+              </div>
               <div style={{ fontSize: 13, color: "#ccc", marginBottom: 3 }}>👤 {o.customer?.name}</div>
               <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>{(o.items || []).map(i => `${i.qty}x ${i.name}`).join(", ")}</div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontWeight: 700, color: "#f97316" }}>${o.total?.toFixed(2)}</span><span style={{ fontSize: 11, color: "#555" }}>{timeAgo(o.createdAt)}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontWeight: 700, color: "#f97316" }}>${o.total?.toFixed(2)}</span>
+                <span style={{ fontSize: 12, color: o.driverName ? "#10b981" : "#555" }}>{o.driverName ? `🏍️ ${o.driverName}` : timeAgo(o.createdAt)}</span>
+              </div>
               {o.status === "assigned" && <button style={{ ...S.btnQuick, marginTop: 8 }} onClick={e => { e.stopPropagation(); setSel([id, o]); setView("detail"); }}>👨‍🍳 Aceptar pedido</button>}
               {o.status === "preparing" && <button style={{ ...S.btnQuick, marginTop: 8, background: "#1a0a2e", color: "#a78bfa", borderColor: "#7c3aed" }} onClick={e => { e.stopPropagation(); setStatus(id, "ready"); }}>✨ Listo</button>}
             </div>);
         })}
-      <div style={S.footer}>{getBranch(user.branch).name}</div>
+
+      {/* Asignación manual — pedidos que el algoritmo no pudo asignar */}
+      {pendingManual.length > 0 && (
+        <div style={{ marginTop: 16, background: "#1a0a0a", borderRadius: 12, border: "2px solid #991b1b", padding: 14 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, color: "#f87171", marginBottom: 10 }}>⚠️ Pedidos sin motorista ({pendingManual.length})</h3>
+          <p style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>El algoritmo no pudo asignar estos pedidos. Asigná un motorista manualmente:</p>
+          {pendingManual.map(([id, o]) => (
+            <div key={id} style={{ background: "#111", borderRadius: 10, padding: 12, marginBottom: 8, border: "1px solid #333" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontWeight: 700, fontFamily: "monospace", color: "#fff", fontSize: 13 }}>{o.orderId}</span>
+                <span style={{ fontWeight: 700, color: "#f97316", fontSize: 13 }}>${o.total?.toFixed(2)}</span>
+              </div>
+              <div style={{ fontSize: 12, color: "#ccc", marginBottom: 8 }}>👤 {o.customer?.name} · 📍 {o.delivery?.address}</div>
+              <select
+                style={{ width: "100%", padding: "10px 12px", background: "#1a1a1a", border: "1px solid #333", borderRadius: 8, color: "#fff", fontSize: 13 }}
+                defaultValue=""
+                onChange={(e) => { if (e.target.value) assignDriverManual(id, e.target.value); }}
+              >
+                <option value="" disabled>Seleccionar motorista...</option>
+                {myDrivers.map(([did, d]) => {
+                  const dStatus = d.driverStatus || "activo";
+                  const statusLabel = dStatus === "activo" ? "🟢" : dStatus === "almuerzo" ? "🍽️" : dStatus === "mandado" ? "📦" : "🔴";
+                  return <option key={did} value={did}>{statusLabel} {d.name} ({dStatus})</option>;
+                })}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Mapa de motoristas */}
+      <DriversMap drivers={myDrivers} driversLoc={driversLoc} branch={user.branch} />
+
+      <div style={S.footer}>{getBranch(user.branch).name} · Encargado de Domicilios</div>
     </div>
   );
 }
@@ -1782,6 +1857,7 @@ function StatsDash({ user, onLogout }) {
 function DriverDash({ user, onLogout }) {
   const [orders, setOrders] = useState({});
   const [activeDelivery, setActiveDelivery] = useState(null);
+  const [driverStatus, setDriverStatus] = useState(user.driverStatus || "activo");
   const gpsRef = useRef(null);
   const alwaysGpsRef = useRef(null);
   const poll = useRef(null);
@@ -1794,6 +1870,19 @@ function DriverDash({ user, onLogout }) {
       if (alwaysGpsRef.current) navigator.geolocation.clearWatch(alwaysGpsRef.current);
     };
   }, []);
+
+  // Change driver status
+  const changeStatus = async (newStatus) => {
+    setDriverStatus(newStatus);
+    await fbUpdate(`users/${user.id}`, { driverStatus: newStatus });
+  };
+
+  const DRIVER_STATUSES = [
+    { id: "activo", label: "Activo", icon: "🟢", color: "#10b981", desc: "Disponible para entregas" },
+    { id: "almuerzo", label: "Almuerzo", icon: "🍽️", color: "#f59e0b", desc: "En hora de comida" },
+    { id: "mandado", label: "Mandado interno", icon: "📦", color: "#3b82f6", desc: "Haciendo mandado" },
+    { id: "no_activo", label: "No activo", icon: "🔴", color: "#ef4444", desc: "No disponible" },
+  ];
 
   // Always-on GPS: share location while logged in so el algoritmo sepa si está en sucursal
   useEffect(() => {
@@ -1867,6 +1956,35 @@ function DriverDash({ user, onLogout }) {
   return (
     <div style={S.container}>
       <div style={S.topBar}><div><h1 style={S.logo}>🏍️ {user.name}</h1><p style={{ fontSize: 12, color: "#10b981", margin: 0 }}>{getBranch(user.branch).name}</p></div><button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => { if (gpsRef.current) navigator.geolocation.clearWatch(gpsRef.current); onLogout(); }}>Salir</button></div>
+
+      {/* Driver status selector */}
+      <div style={{ background: "#111", borderRadius: 12, border: "1px solid #222", padding: 12, marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: "#888", fontWeight: 600, marginBottom: 8 }}>ESTADO:</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {DRIVER_STATUSES.map(ds => (
+            <button
+              key={ds.id}
+              onClick={() => changeStatus(ds.id)}
+              style={{
+                padding: "10px 8px", borderRadius: 10,
+                background: driverStatus === ds.id ? ds.color + "20" : "#1a1a1a",
+                border: driverStatus === ds.id ? `2px solid ${ds.color}` : "1px solid #333",
+                color: driverStatus === ds.id ? ds.color : "#888",
+                fontSize: 12, fontWeight: 700, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                transition: "all 0.15s",
+              }}
+            >
+              {ds.icon} {ds.label}
+            </button>
+          ))}
+        </div>
+        {driverStatus !== "activo" && (
+          <p style={{ fontSize: 11, color: "#ef4444", marginTop: 8, textAlign: "center" }}>
+            ⚠️ No recibirás pedidos automáticos hasta que cambies a Activo
+          </p>
+        )}
+      </div>
 
       {activeDelivery && (
         <div style={{ background: "#1a0a2e", border: "2px solid #8b5cf6", borderRadius: 12, padding: 14, marginBottom: 14, textAlign: "center" }}>
